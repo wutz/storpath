@@ -1,0 +1,275 @@
+## 场景
+
+周二上午 10:14，监控群里弹出告警：
+
+> **[P2] ceph-prod 集群 health 状态变更：HEALTH_OK → HEALTH_WARN**
+
+你是这套集群的值班人。业务侧暂时没有报障，但告警必须在 30 分钟内给出初步结论。这套集群的情况你只知道个大概：36 个 OSD，3 台存储节点，同时提供 RBD 和 CephFS。
+
+现在开始排查。下面是一个模拟终端，你已经登录到 `ceph-node1`（MON 节点之一）。
+
+<Callout type="tip" title="排查纪律：从全局到局部">
+新人最容易犯的错是直接 `ssh` 到某台机器上翻日志。正确顺序永远是：
+**先看集群全局状态 → 再看告警明细 → 再定位到具体 OSD/主机 → 最后才登机器看硬件层证据。**
+反过来做，你会在错误的机器上浪费半小时。
+</Callout>
+
+<Terminal
+  id="ceph-health-quest"
+  host="root@ceph-node1"
+  intro={`模拟终端：这是一次预置的排障演练，输出固定。
+输入 goals 查看目标，hint 获取提示。开始吧。`}
+  commands={[
+    {
+      cmd: 'ceph -s',
+      aliases: ['ceph status'],
+      goal: '查看集群整体状态，确认告警范围',
+      hint: '第一步永远是看全局。Ceph 里最常用的一条命令是什么？',
+      output: `  cluster:
+    id:     8d2f1c3a-7b41-4c9e-9f2a-5c6d8e0a1b23
+    health: HEALTH_WARN
+            1 osds down
+            Degraded data redundancy: 412893/12384219 objects degraded (3.334%), 61 pgs degraded, 61 pgs undersized
+            1 nearfull osd(s)
+            2 pool(s) nearfull
+
+  services:
+    mon: 3 daemons, quorum ceph-node1,ceph-node2,ceph-node3 (age 5w)
+    mgr: ceph-node1(active, since 5w), standbys: ceph-node2
+    mds: 1/1 daemons up, 1 standby
+    osd: 36 osds: 35 up (since 26m), 36 in (since 6w)
+
+  data:
+    pools:   5 pools, 673 pgs
+    objects: 12.38M objects, 44 TiB
+    usage:   134 TiB used, 128 TiB / 262 TiB avail
+    pgs:     612 active+clean
+             61  active+undersized+degraded
+
+  io:
+    client:   96 MiB/s rd, 41 MiB/s wr, 2.1k op/s rd, 780 op/s wr`,
+    },
+    {
+      cmd: 'ceph health detail',
+      goal: '展开告警明细，拿到具体的 OSD 编号',
+      hint: 'HEALTH_WARN 只是标题，Ceph 有一条命令能把每条告警展开到具体对象。',
+      output: `HEALTH_WARN 1 osds down; Degraded data redundancy: 412893/12384219 objects degraded (3.334%), 61 pgs degraded, 61 pgs undersized; 1 nearfull osd(s); 2 pool(s) nearfull
+[WRN] OSD_DOWN: 1 osds down
+    osd.14 (root=default,host=ceph-node3) is down
+[WRN] PG_DEGRADED: Degraded data redundancy: 412893/12384219 objects degraded (3.334%), 61 pgs degraded, 61 pgs undersized
+    pg 3.1f is active+undersized+degraded, acting [7,22]
+    pg 3.4a is active+undersized+degraded, acting [31,5]
+    pg 6.b2 is active+undersized+degraded, acting [19,28]
+    ... (58 more)
+[WRN] OSD_NEARFULL: 1 nearfull osd(s)
+    osd.29 is near full
+[WRN] POOL_NEARFULL: 2 pool(s) nearfull
+    pool 'rbd' is nearfull
+    pool 'cephfs.prod.data' is nearfull`,
+    },
+    {
+      cmd: 'ceph osd tree',
+      goal: '确认故障 OSD 在哪台主机、故障域是否还安全',
+      hint: '需要知道 osd.14 挂在哪台机器上，以及这台机器的其它 OSD 是否正常。',
+      output: `ID  CLASS  WEIGHT     TYPE NAME             STATUS  REWEIGHT  PRI-AFF
+-1         261.81824  root default
+-3          87.27275      host ceph-node1
+ 0    ssd     7.27273          osd.0             up   1.00000  1.00000
+ 1    ssd     7.27273          osd.1             up   1.00000  1.00000
+ ...
+-5          87.27275      host ceph-node2
+12    ssd     7.27273          osd.12            up   1.00000  1.00000
+13    ssd     7.27273          osd.13            up   1.00000  1.00000
+ ...
+-7          87.27275      host ceph-node3
+14    ssd     7.27273          osd.14          down   1.00000  1.00000
+15    ssd     7.27273          osd.15            up   1.00000  1.00000
+16    ssd     7.27273          osd.16            up   1.00000  1.00000
+ ...
+29    ssd     7.27273          osd.29            up   1.00000  1.00000`,
+    },
+    {
+      cmd: 'systemctl status ceph-osd@14',
+      goal: '确认 OSD 进程是自己退出的，还是被系统杀掉的',
+      hint: 'OSD 显示 down，先分清是进程没了，还是进程活着但网络不通。',
+      output: `● ceph-osd@14.service - Ceph object storage daemon osd.14
+     Loaded: loaded (/usr/lib/systemd/system/ceph-osd@.service; enabled)
+     Active: failed (Result: signal) since Tue 2026-08-11 09:48:12 CST; 26min ago
+    Process: 3412 ExecStart=/usr/bin/ceph-osd -f --cluster ceph --id 14 (code=killed, signal=ABRT)
+
+Aug 11 09:48:11 ceph-node3 ceph-osd[3412]: bdev(0x55f2 /var/lib/ceph/osd/ceph-14/block) read stalled read 0x1a2b3000~1000 error: (5) Input/output error
+Aug 11 09:48:11 ceph-node3 ceph-osd[3412]: bluestore(/var/lib/ceph/osd/ceph-14) _do_read bdev-read failed: (5) Input/output error
+Aug 11 09:48:12 ceph-node3 ceph-osd[3412]: /build/ceph/src/os/bluestore/BlueStore.cc: In function 'int BlueStore::_do_read(...)' thread 7f8a1c0d2700
+Aug 11 09:48:12 ceph-node3 ceph-osd[3412]: ceph-osd: FAILED assert(r == 0)
+Aug 11 09:48:12 ceph-node3 systemd[1]: ceph-osd@14.service: Failed with result 'signal'.
+Aug 11 09:48:12 ceph-node3 systemd[1]: ceph-osd@14.service: Scheduled restart job, restart counter is at 5.`,
+    },
+    {
+      cmd: 'ssh ceph-node3 dmesg -T | tail -20',
+      aliases: ['ssh ceph-node3 dmesg -T', 'ssh ceph-node3 "dmesg -T | tail -20"'],
+      goal: '到故障主机上找硬件层的直接证据',
+      hint: 'OSD 报的是 Input/output error。这种错误在内核日志里一定留了痕迹。',
+      output: `[Tue Aug 11 09:47:58 2026] sd 0:0:3:0: [sdd] tag#22 FAILED Result: hostbyte=DID_OK driverbyte=DRIVER_SENSE
+[Tue Aug 11 09:47:58 2026] sd 0:0:3:0: [sdd] tag#22 Sense Key : Medium Error [current]
+[Tue Aug 11 09:47:58 2026] sd 0:0:3:0: [sdd] tag#22 Add. Sense: Unrecovered read error
+[Tue Aug 11 09:47:58 2026] sd 0:0:3:0: [sdd] tag#22 CDB: Read(16) 88 00 00 00 00 01 a2 b3 00 00 00 00 00 08 00 00
+[Tue Aug 11 09:47:58 2026] critical medium error, dev sdd, sector 6993477632 op 0x0:(READ) flags 0x0 phys_seg 1
+[Tue Aug 11 09:48:03 2026] sd 0:0:3:0: [sdd] tag#31 Sense Key : Medium Error [current]
+[Tue Aug 11 09:48:03 2026] critical medium error, dev sdd, sector 6993477640 op 0x0:(READ) flags 0x0 phys_seg 1
+[Tue Aug 11 09:48:11 2026] blk_update_request: critical medium error, dev sdd, sector 6993477648
+[Tue Aug 11 09:48:12 2026] XFS (dm-3): metadata I/O error in "xfs_buf_iodone" at daddr 0x1a2b30 len 8 error 5`,
+    },
+    {
+      cmd: 'ssh ceph-node3 smartctl -a /dev/sdd',
+      aliases: ['ssh ceph-node3 smartctl -H /dev/sdd', 'smartctl -a /dev/sdd'],
+      goal: '用 SMART 确认盘本身已经损坏，形成结论',
+      hint: '内核报了 medium error，还需要一份来自盘自身的健康报告作为更换依据。',
+      output: `smartctl 7.4 2023-08-01 r5530 [x86_64-linux-5.14.0] (local build)
+
+=== START OF INFORMATION SECTION ===
+Model Number:                       SAMSUNG MZQL27T6HBLA-00A07
+Serial Number:                      S6CVNE0T412938
+Total NVM Capacity:                 7,681,501,126,656 [7.68 TB]
+
+=== START OF SMART DATA SECTION ===
+SMART overall-health self-assessment test result: FAILED!
+- media has been placed in read only mode
+
+SMART/Health Information (NVMe Log 0x02)
+Critical Warning:                   0x04
+Temperature:                        41 Celsius
+Available Spare:                    0%
+Available Spare Threshold:          10%
+Percentage Used:                    97%
+Media and Data Integrity Errors:    2847
+Error Information Log Entries:      3106`,
+    },
+    {
+      cmd: 'ceph osd df',
+      output: `ID  CLASS  WEIGHT   REWEIGHT  SIZE     RAW USE  DATA     OMAP    META     AVAIL    %USE   VAR   PGS  STATUS
+ 0    ssd  7.27273   1.00000  7.3 TiB  3.6 TiB  3.5 TiB  12 GiB   38 GiB  3.7 TiB  49.31  0.96   56      up
+ 7    ssd  7.27273   1.00000  7.3 TiB  3.9 TiB  3.8 TiB  14 GiB   41 GiB  3.4 TiB  53.42  1.04   59      up
+14    ssd  7.27273   1.00000  7.3 TiB      0 B      0 B     0 B      0 B      0 B      0     0    0    down
+15    ssd  7.27273   1.00000  7.3 TiB  4.4 TiB  4.3 TiB  16 GiB   45 GiB  2.9 TiB  60.12  1.17   64      up
+29    ssd  7.27273   1.00000  7.3 TiB  6.3 TiB  6.2 TiB  21 GiB   58 GiB  1.0 TiB  86.24  1.68   77      up
+                       TOTAL  262 TiB  134 TiB  132 TiB 486 GiB  1.4 TiB  128 TiB  51.15
+MIN/MAX VAR: 0/1.68  STDDEV: 9.42`,
+    },
+    {
+      cmd: 'ceph df',
+      output: `--- RAW STORAGE ---
+CLASS     SIZE    AVAIL     USED  RAW USED  %RAW USED
+ssd    262 TiB  128 TiB  134 TiB   134 TiB      51.15
+
+--- POOLS ---
+POOL                 ID  PGS   STORED  OBJECTS     USED  %USED  MAX AVAIL
+.mgr                  1    1   72 MiB       19  217 MiB      0     38 TiB
+rbd                   3  256   28 TiB    7.42M   84 TiB  59.42     19 TiB
+cephfs.prod.meta      5   32  186 GiB    2.11M  558 GiB   0.96     19 TiB
+cephfs.prod.data      6  256   16 TiB    2.84M   49 TiB  46.18     19 TiB`,
+    },
+    {
+      cmd: 'ceph pg dump_stuck',
+      output: `PG_STAT  STATE                            UP        UP_PRIMARY  ACTING     ACTING_PRIMARY
+3.1f     active+undersized+degraded      [7,22]              7  [7,22]                  7
+3.4a     active+undersized+degraded     [31,5]              31  [31,5]                 31
+6.b2     active+undersized+degraded     [19,28]             19  [19,28]                19
+ok`,
+    },
+    {
+      cmd: 'ceph versions',
+      output: `{
+    "mon": { "ceph version 19.2.1 (squid) stable": 3 },
+    "mgr": { "ceph version 19.2.1 (squid) stable": 2 },
+    "osd": { "ceph version 19.2.1 (squid) stable": 35 },
+    "mds": { "ceph version 19.2.1 (squid) stable": 2 },
+    "overall": { "ceph version 19.2.1 (squid) stable": 42 }
+}`,
+    },
+    {
+      cmd: 'ceph osd out 14',
+      output: `marked out osd.14.
+
+注意：这条命令在真实环境会立刻触发数据迁移。演练环境不产生实际效果。
+在换盘流程里，正确顺序是先确认盘确实坏了、集群有足够空闲容量，再执行 out。`,
+    },
+  ]}
+/>
+
+## 复盘：这次告警的完整结论
+
+排查完成后，值班记录应该长这样——**结论、依据、动作、风险**四段齐全：
+
+**结论**：`ceph-node3` 上的 `osd.14` 对应的物理盘 `/dev/sdd`（SN: S6CVNE0T412938）介质损坏，已被固件置为只读，OSD 进程因 BlueStore 读取失败而反复崩溃退出。
+
+**依据**：
+1. `ceph health detail` → `osd.14 (host=ceph-node3) is down`
+2. `systemctl status ceph-osd@14` → BlueStore 读盘返回 `(5) Input/output error`，进程 assert 后被 ABRT
+3. `dmesg` → `critical medium error, dev sdd`，扇区级不可恢复读错误
+4. `smartctl` → `SMART overall-health: FAILED`，Available Spare 0%，Percentage Used 97%，介质错误 2847 次
+
+**动作**：
+1. 走坏盘更换流程：`ceph osd out 14` → 等待数据迁移完成 → `ceph osd purge 14` → 换盘 → 重新加入 OSD
+2. 提工单联系厂商更换（盘寿命已用 97%，属于正常损耗）
+
+**风险与次生问题**（这部分最容易漏，也最能体现水平）：
+- `osd.29` 已达 86%，进入 nearfull。osd.14 的数据迁移会**进一步推高其它 OSD 的水位**，有触发 `backfillfull` 甚至 `full`（拒绝写入）的风险。迁移前应先确认容量余量，必要时限速回填。
+- 集群 OSD 平均 `Percentage Used` 需要普查——这批盘同批次采购、同期上线，**一块到寿命意味着其它盘也接近**。这是典型的批次性故障风险。
+- 当前 61 个 PG 处于 `undersized+degraded`，副本数不足。在恢复完成前，集群容错额度是降低的。
+
+<Callout type="warn" title="别急着敲 ceph osd out">
+看到盘坏了就立刻 `out`，是新人最常见的操作事故。`out` 会立即触发大规模数据迁移，如果此时集群水位已高（就像本例的 osd.29 到了 86%），迁移可能把某个 OSD 顶到 full，导致**整个池拒绝写入**——一次小故障被你亲手升级成了业务中断。正确做法是先算容量、再限速、再操作。
+</Callout>
+
+<Quiz
+  id="quest-1"
+  question="本次故障中，判断「盘确实坏了」最有力的证据是哪一条？"
+  options={[
+    { text: 'ceph -s 显示 HEALTH_WARN', feedback: '这只是告警入口，不构成任何硬件结论。' },
+    { text: 'osd.14 状态为 down', feedback: 'OSD down 的原因有很多：进程 OOM、网络不通、配置错误，不能直接推出盘坏。' },
+    { text: 'dmesg 的 medium error 加上 SMART 自检 FAILED', correct: true },
+    { text: '61 个 PG 处于 degraded 状态', feedback: '这是 OSD down 的后果，不是原因。' },
+  ]}
+  explain={<>
+    Ceph 层的信息只能告诉你"哪个 OSD 不工作了"，硬件结论必须来自内核日志和 SMART。
+    换盘工单需要盘的序列号和 SMART 报告作为依据，光贴一句"osd.14 down"是不会被受理的。
+  </>}
+/>
+
+<Quiz
+  id="quest-2"
+  question="在执行换盘流程之前，必须先确认哪些事情？（多选）"
+  options={[
+    { text: '集群剩余容量能否吃下 osd.14 数据的重新分布', correct: true },
+    { text: '当前水位最高的 OSD 距离 backfillfull 还有多少余量', correct: true },
+    { text: '其它同批次盘的 SMART 寿命状态', correct: true },
+    { text: '必须先把集群升级到最新版本', feedback: '换盘和版本升级是两件独立的事，不要在故障处理中夹带变更。' },
+  ]}
+  explain={<>
+    换盘的风险不在换盘本身，而在它触发的数据迁移。迁移会推高所有 OSD 的水位，
+    在 nearfull 状态下操作前必须先算清账。同批次盘的普查则能帮你预判下一次故障。
+  </>}
+/>
+
+<Quiz
+  id="quest-3"
+  question="ceph -s 里 osd 那一行显示「36 osds: 35 up, 36 in」。这里的 in 是什么意思？"
+  options={[
+    { text: '36 个 OSD 进程都在运行', feedback: '进程运行状态用 up/down 表示。' },
+    { text: '36 个 OSD 仍然参与数据分布，包括那个已经 down 的', correct: true },
+    { text: '36 个 OSD 都已经完成数据恢复', feedback: 'in 与恢复进度无关。' },
+    { text: '36 个 OSD 都在同一个故障域内', feedback: 'in 与故障域无关。' },
+  ]}
+  explain={<>
+    <code>up/down</code> 说的是进程活没活，<code>in/out</code> 说的是要不要给它分配数据。
+    osd.14 现在是 down 但仍然 in，所以 CRUSH 还把它算作数据归属地，PG 处于 undersized。
+    执行 <code>ceph osd out 14</code> 之后它变成 out，CRUSH 才会把数据重新分布到别处 —— 这就是迁移被触发的时刻。
+  </>}
+/>
+
+## 这一关的落点
+
+- 排查顺序：`ceph -s` → `ceph health detail` → `ceph osd tree` → 进程日志 → 内核日志 → SMART
+- Ceph 层的告警只能定位到 OSD，硬件结论必须由 dmesg 和 SMART 提供
+- 一个故障往往带着次生风险（本例是容量水位），只报根因不报风险，等于没做完
+- 任何会触发数据迁移的命令，执行前先算容量

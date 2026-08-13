@@ -1,0 +1,94 @@
+@import "tailwindcss";
+
+@theme {
+  --color-brand-50: oklch(0.97 0.02 240);
+  --color-brand-100: oklch(0.93 0.04 240);
+  --color-brand-500: oklch(0.58 0.16 250);
+  --color-brand-600: oklch(0.51 0.17 252);
+  --color-brand-700: oklch(0.44 0.15 254);
+}
+
+/* Shiki 双主题：默认亮色，后续如接入暗色模式再切换变量 */
+.shiki {
+  padding: 1rem 1.125rem;
+  border-radius: 0.5rem;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  overflow-x: auto;
+}
+
+/* MDX 正文排版（不引 typography 插件，保持依赖精简） */
+.lesson-body {
+  line-height: 1.85;
+  color: var(--color-gray-700);
+}
+.lesson-body > * + * {
+  margin-top: 1rem;
+}
+.lesson-body h2 {
+  margin-top: 2.5rem;
+  font-size: 1.375rem;
+  font-weight: 700;
+  color: var(--color-gray-900);
+  border-bottom: 1px solid var(--color-gray-200);
+  padding-bottom: 0.5rem;
+}
+.lesson-body h3 {
+  margin-top: 1.75rem;
+  font-size: 1.0625rem;
+  font-weight: 700;
+  color: var(--color-gray-900);
+}
+.lesson-body ul,
+.lesson-body ol {
+  padding-left: 1.5rem;
+}
+.lesson-body ul {
+  list-style: disc;
+}
+.lesson-body ol {
+  list-style: decimal;
+}
+.lesson-body li + li {
+  margin-top: 0.375rem;
+}
+.lesson-body a {
+  color: var(--color-brand-600);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.lesson-body code:not(.shiki code) {
+  background: var(--color-gray-100);
+  color: var(--color-gray-800);
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+}
+.lesson-body table {
+  width: 100%;
+  font-size: 0.875rem;
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+}
+.lesson-body th,
+.lesson-body td {
+  border: 1px solid var(--color-gray-200);
+  padding: 0.5rem 0.75rem;
+  text-align: left;
+  vertical-align: top;
+}
+.lesson-body th {
+  background: var(--color-gray-50);
+  font-weight: 600;
+  white-space: nowrap;
+}
+.lesson-body blockquote {
+  border-left: 3px solid var(--color-gray-300);
+  padding-left: 1rem;
+  color: var(--color-gray-500);
+}
+.lesson-body hr {
+  border-color: var(--color-gray-200);
+  margin: 2rem 0;
+}

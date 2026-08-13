@@ -1,0 +1,156 @@
+## 一张图先立住
+
+Ceph 的所有复杂度都建立在一个简单事实上：**底层只有一个对象存储 RADOS，上层三种存储都是翻译层。**
+
+```
+       ┌──────────┐  ┌──────────┐  ┌──────────┐
+       │   RBD    │  │  CephFS  │  │   RGW    │   ← 三种对外语义
+       │  块存储  │  │ 文件存储 │  │ 对象存储 │
+       └────┬─────┘  └────┬─────┘  └────┬─────┘
+            │             │             │
+       ┌────┴─────────────┴─────────────┴────┐
+       │            librados                  │   ← 统一客户端库
+       └──────────────────┬───────────────────┘
+                          │
+       ┌──────────────────┴───────────────────┐
+       │               RADOS                   │   ← 可靠的分布式对象存储
+       │   MON      OSD      MGR      MDS      │
+       └───────────────────────────────────────┘
+```
+
+理解了这张图，很多问题就有了答案：为什么 RBD 的快照和 RGW 的分段上传底层机制类似？因为它们最终都是在操作 RADOS 对象。
+
+## 四类守护进程各管什么
+
+### MON — 集群的"户口本"
+
+MON（Monitor）维护集群的各种 map：monmap、osdmap、crushmap、pgmap。客户端连上集群第一件事就是从 MON 拉取这些 map，**之后客户端直接和 OSD 通信，不再经过 MON**。这是 Ceph 高性能的关键设计：MON 不在数据路径上。
+
+MON 之间用 Paxos 保持一致，所以必须组成 quorum（过半数）：
+
+```
+3 个 MON → 容忍挂 1 个
+5 个 MON → 容忍挂 2 个
+```
+
+<Callout type="trap" title="MON 为什么要奇数个">
+4 个 MON 的容忍度和 3 个一样（都是挂 1 个），却多了一台机器的故障概率。所以 MON 数量永远取奇数：小集群 3 个，大集群 5 个，再大也很少超过 7 个。MON 挂到不足半数时，整个集群会停止服务——不是数据丢了，而是没人能确认当前的正确 map 是哪份。
+</Callout>
+
+MON 还有一个容易被忽略的运维点：它的数据库（RocksDB）在集群不健康时会快速膨胀。`mon_data` 所在分区写满会导致 MON 无法启动，进而整个集群不可用。**给 MON 单独留足空间并做容量监控**是基本功。
+
+### OSD — 真正干活的
+
+每一块数据盘对应一个 OSD（Object Storage Daemon）进程。100 块盘就是 100 个 OSD 进程。OSD 负责：
+
+- 存储对象数据到本地（BlueStore 直接管理裸设备，不经过文件系统）
+- 处理客户端的读写请求
+- 副本复制、EC 编解码
+- 和其它 OSD 互相**心跳**，发现同伴失联就上报 MON
+- 数据恢复（recovery）与再平衡（backfill）
+
+<Callout type="note" title="OSD 的资源占用要提前算">
+经验值：**每个 OSD 约需 1 核 CPU 和 4GB 内存**（`osd_memory_target` 默认 4GB）。一台 24 盘的机器就是 24 个 OSD，需要 24 核以上、96GB 以上内存——而且这还没算 EC 编码和恢复时的额外开销。规划时内存给不够，集群一进入恢复状态就会 OOM，这是新集群最常见的翻车方式之一。
+</Callout>
+
+### MGR — 管理面
+
+MGR（Manager）负责收集指标、提供 Dashboard、跑各种插件（pg_autoscaler、balancer、prometheus exporter）。它**不在数据路径上**，挂了不影响读写，但监控和管理会失效。标准配置是 2 个，一主一备。
+
+### MDS — 只有 CephFS 需要
+
+MDS（Metadata Server）为 CephFS 提供 POSIX 元数据服务：目录树、权限、文件锁。注意：**MDS 只处理元数据，文件数据由客户端直接读写 OSD**。
+
+MDS 把热元数据缓存在内存里（`mds_cache_memory_limit`）。缓存不够时，客户端的每次 `ls`、`stat` 都要回 OSD 读元数据池，延迟会成倍上升。这就是上一阶段说的"CephFS 元数据缓存受节点内存限制"的具体含义。
+
+只用 RBD 或 RGW 的集群不需要部署 MDS。
+
+## 一次 RBD 写入的完整路径
+
+把上面的角色串起来，看一次写入实际发生了什么：
+
+1. 客户端启动，连接 MON，拉取 osdmap 和 crushmap（只在启动和 map 变更时做）
+2. 应用往块设备偏移量 X 写 4KB
+3. librbd 把偏移换算成对象名，比如 `rbd_data.10a26b8b4567.0000000000000042`
+4. 客户端本地对对象名做哈希 → 得到 PG 编号
+5. 客户端本地跑 CRUSH 算法：PG → 一组 OSD（比如 osd.7、osd.23、osd.41），第一个是 primary
+6. 客户端**直接把请求发给 osd.7**（primary）
+7. osd.7 写本地，同时把数据转发给 osd.23、osd.41
+8. 两个副本都落盘确认后，osd.7 才给客户端返回成功
+
+<Callout type="tip" title="第 4、5 步是 Ceph 最漂亮的设计">
+数据在哪，是客户端**自己算出来的**，不需要查任何元数据服务。这意味着没有中心查询瓶颈，客户端数量可以线性扩展。代价是客户端必须持有最新的 map——所以 map 变更（比如加盘、坏盘）时会有短暂的抖动，客户端要重新获取 map 并重试。
+</Callout>
+
+这条路径也解释了几个常见现象：
+
+- **写延迟至少是网络往返 + 最慢副本的落盘延迟**，所以副本数越多、网络越差，写越慢
+- **cluster network 承载的是第 7 步的副本流量**，把它和客户端流量分开能显著改善性能
+- **primary OSD 是热点**，某个 OSD 慢会拖慢所有以它为 primary 的 PG
+
+## 看懂 ceph -s
+
+```
+  cluster:
+    id:     8d2f1c3a-...
+    health: HEALTH_OK
+
+  services:
+    mon: 3 daemons, quorum ceph-1,ceph-2,ceph-3 (age 3w)
+    mgr: ceph-1(active, since 3w), standbys: ceph-2
+    mds: 1/1 daemons up, 1 standby
+    osd: 36 osds: 36 up (since 2w), 36 in (since 5w)
+
+  data:
+    pools:   4 pools, 673 pgs
+    objects: 12.4M objects, 45 TiB
+    usage:   137 TiB used, 125 TiB / 262 TiB avail
+    pgs:     673 active+clean
+
+  io:
+    client:   152 MiB/s rd, 88 MiB/s wr, 3.2k op/s rd, 1.1k op/s wr
+```
+
+读这一屏的要点：
+
+- `health`：HEALTH_OK / HEALTH_WARN / HEALTH_ERR，出问题时用 `ceph health detail` 展开
+- `mon quorum`：列出的 MON 必须是全部，少一个就要查
+- `osd: 36 osds: 36 up, 36 in`：**up 是进程活着，in 是参与数据分布**。`up` 少了说明进程挂了；`in` 少了说明被踢出了数据分布，会触发数据迁移
+- `pgs: 673 active+clean`：所有 PG 都是 `active+clean` 才是健康。出现 `degraded`、`undersized`、`backfilling` 说明正在恢复
+- `usage`：注意 used 是**含冗余的实际占用**，不是逻辑数据量
+
+<Quiz
+  id="arch-1"
+  question="客户端要写一个对象，它是怎么知道该把请求发给哪个 OSD 的？"
+  options={[
+    { text: '问 MON，MON 返回目标 OSD 地址', feedback: '若如此，MON 就成了每次 I/O 的中心瓶颈。MON 只提供 map，不参与寻址。' },
+    { text: '问 MDS 查元数据表', feedback: 'MDS 只服务 CephFS 的文件元数据，与对象寻址无关。' },
+    { text: '客户端用拿到的 crushmap 在本地计算出来', correct: true },
+    { text: '广播给所有 OSD，谁有数据谁响应', feedback: '广播寻址无法扩展。' },
+  ]}
+  explain={<>这是 Ceph 去中心化的核心：客户端持有 map 后自行计算 object → PG → OSD，数据路径上没有任何元数据查询。</>}
+/>
+
+<Quiz
+  id="arch-2"
+  question="下面哪些组件挂掉会直接导致客户端无法读写数据？（多选）"
+  options={[
+    { text: 'MON 挂到不足半数', correct: true },
+    { text: 'MGR 全挂', feedback: 'MGR 不在数据路径上，挂了只影响监控和管理功能。' },
+    { text: '某个 PG 的所有副本 OSD 都挂了', correct: true },
+    { text: 'MDS 全挂（仅使用 RBD 的集群）', feedback: '只用 RBD 的集群根本不需要 MDS。但如果用了 CephFS，MDS 全挂则文件系统不可用。' },
+  ]}
+  explain={<>
+    判断依据就是"是否在数据路径上"。MON 提供 map 且需要 quorum 才能更新 map；OSD 直接持有数据；
+    MGR 是管理面；MDS 只对 CephFS 关键。
+  </>}
+/>
+
+## 这节课的落点
+
+- RADOS 是底座，RBD / CephFS / RGW 都是它的翻译层
+- MON 管 map 且必须 quorum（奇数个），不在数据路径上
+- OSD 一盘一进程，按每 OSD 1 核 4GB 规划资源
+- MGR 是管理面，MDS 只服务 CephFS
+- 客户端自己算数据位置，这是 Ceph 能横向扩展的根本
+- `ceph -s` 的每一段都要能说清含义，这是后面所有排障的起点

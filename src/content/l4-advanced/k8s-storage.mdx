@@ -1,0 +1,276 @@
+## 容器时代的存储接口层
+
+容器里的文件是临时的：容器崩溃或重启，容器内创建和修改的文件就消失了。K8s 用 Volume 解决这个问题，并把它分成两大类。
+
+```
+Volume
+├─ Ephemeral Volume 临时卷（与 Pod 同生命周期）
+│   ├─ emptyDir      —— 用宿主机系统盘或内存
+│   └─ configMap / secret —— 把配置挂进容器
+│
+└─ Persistent Volume 持久卷（超出 Pod 生命周期）
+    ├─ PV  —— 集群里的一块存储，管理员创建
+    ├─ PVC —— 用户对存储的申请
+    └─ StorageClass —— 动态创建 PV 的模板
+```
+
+## PV / PVC / SC：三者的职责边界
+
+理解这三者最好的方式是看**谁创建它、谁使用它**：
+
+| 对象 | 谁创建 | 代表什么 |
+| --- | --- | --- |
+| **PV** | 管理员（或由 SC 自动创建） | 真实存在的一块存储后端 |
+| **PVC** | 应用开发者 | "我要一块 20G 的存储，用 xxx 类型" |
+| **StorageClass** | 管理员 | 创建 PV 的模板：用哪个驱动、什么参数 |
+
+手动创建和管理大量 PV 非常繁琐，所以有了 **动态供应（Dynamic Provisioning）**：管理员只定义 StorageClass，用户创建 PVC 时 K8s 自动调用驱动创建对应的 PV 并绑定。
+
+```
+管理员视角                          用户视角
+─────────                          ────────
+部署 CSI 驱动          →
+创建 StorageClass      →           创建 PVC，指定 storageClassName
+                                        ↓（自动发生）
+                                   K8s 通过 SC 调用 CSI 创建 PV 并绑定
+                                        ↓
+                                   Pod 的 volumes 引用 PVC，
+                                   通过 volumeMounts 挂到容器路径
+```
+
+## accessModes：最容易配错的字段
+
+| 模式 | 缩写 | 含义 | 谁支持 |
+| --- | --- | --- | --- |
+| ReadWriteOnce | RWO | 单节点读写 | 块存储（RBD、云盘、local） |
+| ReadOnlyMany | ROX | 多节点只读 | 多数 |
+| ReadWriteMany | RWX | 多节点读写 | 文件存储（CephFS、GPFS、NFS） |
+| ReadWriteOncePod | RWOP | 单 Pod 读写 | 较新特性，比 RWO 更严格 |
+
+<Callout type="trap" title="RWO 不是「只能一个 Pod 用」">
+RWO 的准确含义是**单节点**读写。同一个节点上的多个 Pod 是可以共享一个 RWO 卷的（因为挂载点在节点上）。
+
+这经常导致一类困惑：本地测试时两个 Pod 恰好调度到同一节点，共享 RWO 卷工作正常；上生产后 Pod 分散到不同节点，就开始报 `Multi-Attach error`。
+
+要严格限制单 Pod 使用，用 `ReadWriteOncePod`。要真正多节点共享，必须用支持 RWX 的文件存储。
+</Callout>
+
+## 回收策略与卷绑定模式
+
+```yaml
+reclaimPolicy: Delete        # PVC 删除后，PV 和后端存储一起删除
+# reclaimPolicy: Retain      # PVC 删除后保留 PV 和数据，需手工清理
+
+volumeBindingMode: Immediate            # PVC 创建后立刻创建并绑定 PV
+# volumeBindingMode: WaitForFirstConsumer # 等到有 Pod 使用时再创建
+```
+
+<Callout type="warn" title="生产环境的重要数据用 Retain">
+`Delete` 是默认值，也是最方便的——但它意味着**误删一个 PVC 就直接销毁了后端数据**，没有回收站。
+
+重要数据的 StorageClass 应该配 `Retain`：PVC 删除后 PV 变成 `Released` 状态，数据还在，确认无误后再手工删除。多花的一步操作，换来的是一次误删事故的兜底。
+
+`WaitForFirstConsumer` 则用于本地存储或拓扑相关的存储：不知道 Pod 会调度到哪个节点前就创建 PV，可能创建在错误的可用区/节点上导致 Pod 无法调度。
+</Callout>
+
+## CSI 架构
+
+CSI（Container Storage Interface）是标准化接口，把第三方存储和 K8s 解耦。一个 CSI 驱动通常包含两部分：
+
+```
+controller（Deployment，通常 2 副本）
+  ├─ external-provisioner   ← 处理创建/删除卷
+  ├─ external-attacher      ← 处理 attach/detach
+  ├─ external-resizer       ← 处理扩容
+  ├─ external-snapshotter   ← 处理快照
+  └─ CSI driver 本体
+
+node（DaemonSet，每个节点一个）
+  ├─ node-driver-registrar  ← 向 kubelet 注册
+  └─ CSI driver 本体        ← 执行实际的 mount/umount
+```
+
+排障时的关键认知：**创建卷的问题看 controller，挂载卷的问题看 node**。
+
+```bash
+# 卷创建不出来（PVC Pending）→ 看 provisioner
+kubectl -n <ns> logs deploy/<csi-controller> -c csi-provisioner
+
+# 卷创建了但 Pod 挂不上（Pod ContainerCreating）→ 看对应节点的 node plugin
+kubectl -n <ns> logs <csi-node-pod-on-that-node> -c csi-<driver>
+```
+
+## 演练：PVC 一直 Pending
+
+<Terminal
+  id="pvc-pending"
+  host="root@k8s-master1"
+  intro={`模拟终端：一个 PVC 创建了 10 分钟仍是 Pending，业务 Pod 起不来。
+输入 goals 看目标，hint 要提示。`}
+  commands={[
+    {
+      cmd: 'kubectl get pvc',
+      goal: '确认 PVC 的状态和它请求的 StorageClass',
+      hint: '先看现象：PVC 是什么状态，用的哪个 StorageClass。',
+      output: `NAME        STATUS    VOLUME   CAPACITY   ACCESS MODES   STORAGECLASS   AGE
+data-pvc    Pending                                                 block-ceph     10m`,
+    },
+    {
+      cmd: 'kubectl describe pvc data-pvc',
+      goal: '看 Events，让 K8s 直接告诉你卡在哪',
+      hint: 'describe 的 Events 段落是排查 Pending 的第一手信息。',
+      output: `Name:          data-pvc
+Namespace:     default
+StorageClass:  block-ceph
+Status:        Pending
+Capacity:
+Access Modes:
+Events:
+  Type     Reason                Age                 From                         Message
+  ----     ------                ----                ----                         -------
+  Normal   ExternalProvisioning  10m (x41 over 10m)  persistentvolume-controller  Waiting for a volume to be created by external provisioner "rbd.csi.ceph.com"
+  Warning  ProvisioningFailed    9m (x8 over 10m)    rbd.csi.ceph.com_csi-rbdplugin-provisioner-7d9f8b6c4-xk2mn
+           failed to provision volume with StorageClass "block-ceph": rpc error: code = Internal desc = failed to get connection: connecting failed: rados: ret=-13, Permission denied`,
+    },
+    {
+      cmd: 'kubectl get sc block-ceph -o yaml',
+      goal: '确认 StorageClass 引用的 secret 与集群参数',
+      hint: '报错是权限拒绝，先看 SC 里配的 secret 名字和 clusterID。',
+      output: `apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: block-ceph
+provisioner: rbd.csi.ceph.com
+parameters:
+  clusterID: 8d2f1c3a-7b41-4c9e-9f2a-5c6d8e0a1b23
+  pool: rbd
+  imageFeatures: layering
+  csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: default
+reclaimPolicy: Delete
+allowVolumeExpansion: true`,
+    },
+    {
+      cmd: 'kubectl get secret csi-rbd-secret -o jsonpath={.data.userID}',
+      goal: '确认 secret 里的用户名',
+      hint: 'Permission denied 通常是 userID / userKey 与 Ceph 侧不匹配。',
+      output: `a3ViZXJuZXRlcw==
+
+# base64 -d → kubernetes`,
+    },
+    {
+      cmd: 'ceph auth get client.kubernetes',
+      goal: '在 Ceph 侧核对该用户的权限范围',
+      hint: '去 Ceph 侧看这个用户到底被授予了什么权限。',
+      output: `[client.kubernetes]
+        key = AQBxxxxxxxxxxxxxxxxxxxxxxxxxx==
+        caps mgr = "profile rbd pool=rbd"
+        caps mon = "profile rbd"
+        caps osd = "profile rbd pool=kube"
+
+# 注意：osd 的 caps 限定的是 pool=kube
+# 但 StorageClass 里写的 pool 是 rbd —— 权限与目标池不匹配`,
+    },
+    {
+      cmd: 'kubectl logs deploy/csi-rbdplugin-provisioner -c csi-provisioner --tail=5',
+      output: `I0813 10:12:03.412  Waiting for volume to be created...
+E0813 10:12:04.882  failed to provision volume: rados: ret=-13, Permission denied
+E0813 10:12:04.883  error syncing claim "default/data-pvc": failed to provision volume`,
+    },
+    {
+      cmd: 'kubectl get pod',
+      output: `NAME              READY   STATUS              RESTARTS   AGE
+app-7d9f8b6c4-x2k    0/1     ContainerCreating   0          10m`,
+    },
+    {
+      cmd: 'ceph -s',
+      output: `  cluster:
+    health: HEALTH_OK
+  services:
+    mon: 3 daemons, quorum ceph-node1,ceph-node2,ceph-node3
+    osd: 36 osds: 36 up, 36 in
+  data:
+    pgs: 673 active+clean
+
+# 集群本身完全健康 —— 说明问题不在存储侧，在接入配置上`,
+    },
+  ]}
+/>
+
+**结论**：`client.kubernetes` 的 OSD 权限被限定在 `pool=kube`，而 StorageClass 里指定的池是 `rbd`。修复方式是二者对齐：
+
+```bash
+# 方式一：放开用户权限到正确的池
+ceph auth caps client.kubernetes \
+  mon 'profile rbd' \
+  osd 'profile rbd pool=rbd' \
+  mgr 'profile rbd pool=rbd'
+
+# 方式二：把 StorageClass 的 pool 改成 kube
+```
+
+## PVC Pending 排查清单
+
+按顺序走，绝大多数问题在前三步就能定位：
+
+| 检查项 | 命令 | 常见原因 |
+| --- | --- | --- |
+| 1. PVC 事件 | `kubectl describe pvc` | 信息最直接，先看这里 |
+| 2. StorageClass 存在吗 | `kubectl get sc` | 名字写错、SC 不存在 |
+| 3. provisioner 日志 | `kubectl logs <csi-controller>` | 权限、网络、参数错误 |
+| 4. secret 是否正确 | `kubectl get secret -o yaml` | key 名字错、namespace 错、内容过期 |
+| 5. 后端存储健康 | `ceph -s` / `mmhealth` | 存储侧真的有问题 |
+| 6. accessMode 是否支持 | 对比 SC 与 PVC | 用 RBD 要求 RWX |
+| 7. 容量与配额 | `ceph df` / `mmlsquota` | 后端没空间了 |
+| 8. 拓扑约束 | `describe` 里的调度信息 | WaitForFirstConsumer + 无可用节点 |
+
+<Quiz
+  id="k8s-1"
+  question="两个 Pod 要共享同一份数据。PVC 用了 ceph-csi-rbd 的 StorageClass，accessMode 写 ReadWriteMany。会发生什么？"
+  options={[
+    { text: '正常工作，K8s 会处理好并发', feedback: 'K8s 不会阻止你，但块设备被两个节点同时挂载会写坏文件系统。' },
+    { text: '取决于两个 Pod 是否在同一节点；跨节点会报 Multi-Attach error 或损坏数据', correct: true },
+    { text: 'PVC 会一直 Pending', feedback: '部分驱动会拒绝，但更常见的是创建成功后在挂载阶段出问题。' },
+    { text: '会自动降级成 ReadWriteOnce', feedback: 'K8s 不会自动改你的声明。' },
+  ]}
+  explain={<>
+    这类问题在测试环境常常「看起来正常」——因为两个 Pod 恰好被调度到同一节点。
+    上生产后 Pod 分散就出事。需要真正共享，必须用 CephFS / GPFS / NFS 这类支持 RWX 的文件存储。
+  </>}
+/>
+
+<Quiz
+  id="k8s-2"
+  question="PVC Pending，describe 显示 provisioner 报 Permission denied。最该往哪个方向查？"
+  options={[
+    { text: '后端存储集群故障', feedback: '权限拒绝说明连上了但没权限，且题中 ceph -s 是 HEALTH_OK。' },
+    { text: 'CSI 用的用户凭据、以及该用户对目标池的权限范围', correct: true },
+    { text: 'K8s 节点资源不足', feedback: '资源不足会体现在 Pod 调度失败，不是卷创建失败。' },
+    { text: '网络不通', feedback: '网络不通会报连接超时，不是权限拒绝。' },
+  ]}
+  explain={<>
+    Permission denied 的两个常见来源：secret 里的 key/userID 不对，或用户的 caps 限定的池与 StorageClass 里的 pool 不一致。
+    演练里就是后者——这是接入 ceph-csi 时最高频的配置错误。
+  </>}
+/>
+
+<Quiz
+  id="k8s-3"
+  question="关于 reclaimPolicy，生产环境重要数据应该怎么配？"
+  options={[
+    { text: 'Delete，方便自动清理', feedback: '误删 PVC 会直接销毁后端数据，没有兜底。' },
+    { text: 'Retain，PVC 删除后保留数据，确认后再手工清理', correct: true },
+    { text: '不配，用默认值就行', feedback: '默认值是 Delete。' },
+    { text: 'Recycle', feedback: 'Recycle 已被废弃。' },
+  ]}
+  explain={<>Retain 让 PV 在 PVC 删除后进入 Released 状态，数据仍在。多一步手工确认，换一次误删事故的兜底——这个交换非常划算。</>}
+/>
+
+## 这节课的落点
+
+- PV 是实物、PVC 是申请、SC 是模板；动态供应把管理员从手工建 PV 中解放出来
+- RWO 是**单节点**而非单 Pod，跨节点共享必须用支持 RWX 的文件存储
+- 重要数据用 `reclaimPolicy: Retain`
+- CSI 分 controller（创建卷）和 node（挂载卷）两部分，按症状选择看哪边的日志
+- PVC Pending 的排查顺序：describe 事件 → SC → provisioner 日志 → secret → 后端
+- `Permission denied` 通常是 caps 限定的池与 SC 的 pool 不一致

@@ -1,0 +1,237 @@
+## 这一节要做什么
+
+用 cephadm 从零拉起一套三节点 Ceph 集群。cephadm 用容器运行所有守护进程，通过 SSH 管理各节点，是当前官方推荐的部署方式。
+
+**适用场景**：独立的存储集群，服务多个计算集群。与之相对的是下一节的 Rook（存储与计算同集群）。
+
+**实验环境要求**：3 台机器（虚拟机即可），每台至少 1 块空闲数据盘，能互相 SSH。
+
+<Callout type="warn" title="动手前的三条纪律">
+1. 数据盘必须是**空盘**，cephadm 会直接擦除它
+2. 不要提前创建名为 `ceph` 的系统用户，否则安装包的 post-install 脚本会执行失败
+3. 系统盘**必须是 SSD**，不能用机械盘——MON 的 RocksDB 在上面，机械盘会拖垮整个管理面
+</Callout>
+
+## 第 0 步：环境准备
+
+三件事，缺一不可。
+
+```bash
+# 1. 主机名解析：所有节点的 /etc/hosts 保持一致
+cat >> /etc/hosts <<'EOF'
+10.0.20.1    ceph-node1
+10.0.20.2    ceph-node2
+10.0.20.3    ceph-node3
+EOF
+
+# 2. 时间同步：Ceph 对时间偏差非常敏感，超过 0.05 秒就会告警
+dnf install -y chrony
+systemctl enable chronyd --now
+chronyc sources
+
+# 3. 容器运行时：podman 或 docker 二选一
+dnf install -y podman
+```
+
+<Callout type="trap" title="clock skew detected 是最常见的第一个告警">
+Ceph 的默认容忍偏差 `mon_clock_drift_allowed` 只有 0.05 秒。虚拟机休眠后恢复、NTP 源不可达，都会让 MON 之间时间对不上，直接 HEALTH_WARN。
+
+部署前先确认 `chronyc sources` 有可用源且 offset 很小。这条检查能省下你后面半小时的困惑。
+</Callout>
+
+## 第 1 步：安装 cephadm
+
+```bash
+# 查最新版本：https://docs.ceph.com/en/latest/releases/
+CEPH_RELEASE=20.2.1
+
+curl --silent --remote-name --location \
+  https://mirrors.ustc.edu.cn/ceph/rpm-${CEPH_RELEASE}/el9/noarch/cephadm
+chmod +x cephadm
+mv cephadm /usr/bin/
+
+# 安装 ceph 客户端命令（只需在带 _admin 标签的节点上装）
+cephadm add-repo --release tentacle \
+  --repo-url http://mirrors.ustc.edu.cn/ceph \
+  --gpg-url http://mirrors.ustc.edu.cn/ceph/keys/release.gpg
+dnf install -y ceph-common
+```
+
+节点上的 `cephadm` 只用来**引导集群**，以及后续用 `cephadm shell` 进容器执行命令。日常运维用的是 `ceph` 命令。
+
+## 第 2 步：引导第一个节点
+
+```bash
+cephadm --image quay.io/ceph/ceph:v20.2.1 bootstrap \
+  --mon-ip 10.0.20.1 \
+  --cluster-network 10.1.20.0/24
+```
+
+这一条命令做了六件事，记住它们，排障时用得上：
+
+1. 在本机创建第一个 **MON** 和 **MGR**
+2. 生成一对 SSH 密钥，把公钥加进本机 `authorized_keys`
+3. 把公钥复制一份到 `/etc/ceph/ceph.pub`（**加节点时要用**）
+4. 生成最小配置文件 `/etc/ceph/ceph.conf`
+5. 把 `client.admin` 的 keyring 写到 `/etc/ceph/ceph.client.admin.keyring`
+6. 给引导节点打上 `_admin` 标签
+
+完成后会打印 Dashboard 地址和初始密码，**记下来**。
+
+```bash
+ceph -s      # 此时应该看到 1 个 mon、1 个 mgr、0 个 osd
+```
+
+<Callout type="tip" title="离线环境用初始配置文件指定镜像">
+生产环境常常无法访问 quay.io。可以在 bootstrap 时用 `--config` 传入一份初始配置，把所有监控组件的镜像地址一次性指向内网镜像仓库：
+
+```ini
+[mgr]
+mgr/cephadm/container_image_prometheus = <内网仓库>/prometheus:v3.6.0
+mgr/cephadm/container_image_grafana = <内网仓库>/ceph/grafana:12.2.0
+mgr/cephadm/container_image_node_exporter = <内网仓库>/node-exporter:v1.9.1
+mgr/cephadm/container_image_alertmanager = <内网仓库>/alertmanager:v0.28.1
+```
+
+```bash
+cephadm --image <内网仓库>/ceph:v20.2.1 bootstrap --mon-ip 10.0.20.1 --config ./initial-ceph.conf
+```
+
+否则部署到监控组件那一步会卡住，而且报错信息不直观。
+</Callout>
+
+## 第 3 步：添加其余节点
+
+```bash
+# 先把引导节点的公钥分发到其它节点
+ssh-copy-id -f -i /etc/ceph/ceph.pub root@ceph-node2
+ssh-copy-id -f -i /etc/ceph/ceph.pub root@ceph-node3
+
+# 加入集群，同时打标签
+ceph orch host add ceph-node2 --labels _admin
+ceph orch host add ceph-node3 --labels _admin
+
+ceph orch host ls
+```
+
+标签决定了哪些服务会调度到哪些节点：
+
+| 标签 | 含义 |
+| --- | --- |
+| `_admin` | 该节点会自动获得 admin keyring 和 ceph.conf，可以直接跑 ceph 命令 |
+| `mon` / `mgr` / `mds` / `rgw` | 对应服务的候选节点 |
+
+```bash
+# 节点少于 5 个时，把 MON 固定为 3 个
+ceph orch apply mon --placement="3"
+```
+
+## 第 4 步：添加 OSD
+
+```bash
+# 先看看哪些盘是可用的
+ceph orch device ls
+```
+
+```
+HOST        PATH          TYPE  DEVICE ID          SIZE  AVAILABLE  REJECT REASONS
+ceph-node1  /dev/nvme1n1  ssd   SAMSUNG_MZQL...   7680G  Yes
+ceph-node1  /dev/nvme0n1  ssd   INTEL_SSDSC...     480G  No         Insufficient space / LVM detected
+```
+
+`AVAILABLE` 为 No 时看 `REJECT REASONS`——最常见的是盘上有残留分区或 LVM。
+
+```bash
+# 方式一：把所有可用盘都做成 OSD（实验环境常用）
+ceph orch apply osd --all-available-devices
+
+# 方式二：指定设备（生产推荐，可控）
+ceph orch daemon add osd ceph-node1:/dev/nvme1n1
+
+# 清理有残留的盘
+ceph orch device zap ceph-node1 /dev/nvme1n1 --force
+```
+
+## 第 5 步：验证
+
+```bash
+ceph -s
+ceph osd tree
+ceph health detail
+ceph orch ps           # 看所有守护进程的部署状态
+```
+
+健康的结果应该是：`HEALTH_OK`、MON quorum 有 3 个、所有 OSD `up` 且 `in`、所有 PG `active+clean`。
+
+<Callout type="trap" title="常见翻车点速查">
+| 现象 | 原因 | 处理 |
+| --- | --- | --- |
+| `clock skew detected` | 时间不同步 | 检查 chrony |
+| OSD 加不上，设备 `AVAILABLE: No` | 盘上有残留分区/LVM | `ceph orch device zap` |
+| 加节点卡住 | ceph.pub 没分发或 SSH 不通 | 手工 ssh 验证 |
+| `mon is allowing insecure global_id reclaim` | 升级后的兼容开关 | `ceph config set mon auth_allow_insecure_global_id_reclaim false` |
+| PG 一直 `undersized` | 节点数少于副本数，或故障域不满足 | 检查 `ceph osd tree` 和 crush rule |
+| 监控组件拉不起来 | 镜像拉取失败 | 配置内网镜像地址 |
+</Callout>
+
+## 第 6 步：内存参数（生产必做）
+
+默认 `osd_memory_target` 是 4GB，大节点上要按实际情况调：
+
+```bash
+# 256GB 内存、32 盘的节点：OSD 总内存控制在 192GB 内 → 每 OSD 6GB
+ceph config set osd osd_memory_target 6442450944
+
+# 查看生效值
+ceph config get osd osd_memory_target
+```
+
+内存给得不够，集群一进入恢复状态就会 OOM——这是新集群最常见的翻车方式之一。
+
+<Quiz
+  id="cephadm-1"
+  question="bootstrap 完成后，添加第二个节点时卡住不动。最该先检查什么？"
+  options={[
+    { text: '把 /etc/ceph/ceph.pub 分发到目标节点的 authorized_keys 了吗', correct: true },
+    { text: '目标节点的磁盘容量够不够', feedback: '加节点这一步还不涉及 OSD 和容量。' },
+    { text: '重新 bootstrap 一次', feedback: '这会毁掉已有集群，且没有针对问题。' },
+    { text: '把 MON 数量改成 1', feedback: '与 SSH 连通性无关。' },
+  ]}
+  explain={<>cephadm 通过 SSH 管理所有节点。bootstrap 生成的公钥在 /etc/ceph/ceph.pub，必须先分发出去。手工 <code>ssh root@ceph-node2</code> 验证一下最快。</>}
+/>
+
+<Quiz
+  id="cephadm-2"
+  question="ceph orch device ls 显示某块盘 AVAILABLE 为 No，REJECT REASONS 是 LVM detected。怎么处理？"
+  options={[
+    { text: '换一块新盘', feedback: '成本太高，盘本身没问题。' },
+    { text: '用 ceph orch device zap 清除盘上的残留元数据', correct: true },
+    { text: '忽略它，Ceph 会自动处理', feedback: 'Ceph 出于安全考虑绝不会自动擦除有数据痕迹的盘。' },
+    { text: '修改 crush rule', feedback: '与设备可用性无关。' },
+  ]}
+  explain={<>
+    Ceph 拒绝使用带有残留分区、LVM 或文件系统签名的盘，这是防止误擦数据的保护机制。
+    确认盘上确实没有需要的数据后，用 zap 清理。<strong>执行前务必确认盘号</strong>——zap 是不可逆的。
+  </>}
+/>
+
+<Quiz
+  id="cephadm-3"
+  question="关于 bootstrap 做的事情，下面哪些是对的？（多选）"
+  options={[
+    { text: '创建第一个 MON 和 MGR', correct: true },
+    { text: '把公钥写到 /etc/ceph/ceph.pub 供后续加节点使用', correct: true },
+    { text: '给引导节点打上 _admin 标签', correct: true },
+    { text: '自动把集群里所有磁盘做成 OSD', feedback: 'bootstrap 不碰任何数据盘，OSD 要单独添加。' },
+  ]}
+  explain={<>记住 bootstrap 的六件事，能解释后面绝大多数"为什么这个文件在这里"的疑问。</>}
+/>
+
+## 这节课的落点
+
+- 部署前三件事：hosts 解析、时间同步、容器运行时
+- bootstrap 做了六件事，其中 `/etc/ceph/ceph.pub` 是加节点的前提
+- 标签驱动调度，`_admin` 决定谁能直接跑 ceph 命令
+- 盘加不上先看 `REJECT REASONS`，多数是残留元数据，用 zap 清理
+- 节点少于 5 个时把 MON 固定为 3 个
+- `osd_memory_target` 必须按节点实际内存调整，否则恢复时 OOM

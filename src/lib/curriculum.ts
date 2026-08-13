@@ -104,7 +104,7 @@ export const tracks: Track[] = [
         title: 'CPU 与内存：存储节点的隐形瓶颈',
         summary: 'OSD 进程吃满 CPU、NUMA 跨节点访问、page cache 被挤掉，都会表现成"磁盘慢"。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '读懂 run queue、上下文切换、软中断对存储进程的影响',
@@ -145,7 +145,7 @@ export const tracks: Track[] = [
         title: '文件系统：从 VFS 到 XFS 挂载参数',
         summary: '存储服务底下压着的还是本地文件系统，它的行为直接决定上层表现。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '解释 VFS、inode、dentry cache 在读写路径中的位置',
@@ -166,7 +166,7 @@ export const tracks: Track[] = [
         title: '网络：存储集群的第二块硬盘',
         summary: '分布式存储把网络放进了 I/O 路径，网络抖动会直接变成写延迟。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '估算给定带宽下集群副本写入的理论上限',
@@ -187,7 +187,7 @@ export const tracks: Track[] = [
         title: '观测与压测工具箱',
         summary: '把 iostat/vmstat/perf/bpftrace 和 fio/elbencho 串成一套可复用的手法。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 45,
         objectives: [
           '用 fio 设计出能回答具体问题的测试用例，而不是跑个分',
@@ -266,7 +266,7 @@ export const tracks: Track[] = [
         title: '一致性、故障域与可用性',
         summary: 'CAP 不是屠龙术，它每天都在决定你的集群在断电时丢不丢数据。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '区分强一致、最终一致在运维上的可观察差异',
@@ -285,7 +285,7 @@ export const tracks: Track[] = [
         title: '硬件基础：从 NAND 到整机选型',
         summary: '写放大、寿命、掉电保护，这些盘的特性会一路传导到集群指标上。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '解释 SSD 写放大、GC、TRIM 与稳态性能',
@@ -306,7 +306,7 @@ export const tracks: Track[] = [
         title: '存储协议与接入方式',
         summary: 'iSCSI、NFS、S3、NVMe-oF 各自的开销与坑，接入前先知道。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 25,
         objectives: [
           '为给定业务选择接入协议并说明理由',
@@ -368,7 +368,7 @@ export const tracks: Track[] = [
         title: 'CRUSH 与 PG：数据到底落在哪块盘上',
         summary: '没有中心元数据服务，客户端却能算出数据在哪 —— CRUSH 是 Ceph 最漂亮的设计。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 40,
         objectives: [
           '手工推演 object → PG → OSD 的映射过程',
@@ -390,7 +390,7 @@ export const tracks: Track[] = [
         title: '实验：用 cephadm 从零部署一套集群',
         summary: '三节点起步，走完 bootstrap、加主机、加 OSD、看健康状态的全流程。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 60,
         objectives: [
           '独立完成一套三节点 Ceph 集群部署',
@@ -412,7 +412,7 @@ export const tracks: Track[] = [
         title: '实验：Rook 在 K8s 里跑 Ceph',
         summary: '存储与计算同集群的另一条路线，Operator 帮你做了什么、藏了什么。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 60,
         objectives: [
           '用 Rook Operator 部署一套 CephCluster',
@@ -433,7 +433,7 @@ export const tracks: Track[] = [
         title: 'RBD 块存储：从 pool 到挂载',
         summary: '创建 pool、开 image、映射到主机，再把它接到 K8s 里。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 40,
         objectives: [
           '创建 RBD pool 与 image 并挂载使用',
@@ -454,7 +454,7 @@ export const tracks: Track[] = [
         title: 'CephFS 文件存储：MDS 与元数据',
         summary: '共享文件系统的甜与苦，元数据缓存是它的命门。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 45,
         objectives: [
           '部署 CephFS 并用内核客户端挂载',
@@ -476,7 +476,7 @@ export const tracks: Track[] = [
         title: 'RGW 对象存储：S3 网关',
         summary: '把 RADOS 包装成 S3，用户、bucket、配额与多站点。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 40,
         objectives: [
           '部署 RGW 并创建用户、bucket',
@@ -497,7 +497,7 @@ export const tracks: Track[] = [
         title: 'Day-2 运维：扩容、换盘、升级',
         summary: '集群跑起来只是开始，接下来两年都是这些活。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 50,
         objectives: [
           '安全地加盘、下线盘并控制数据迁移速度',
@@ -538,7 +538,7 @@ export const tracks: Track[] = [
         title: 'Ceph 性能调优与压测',
         summary: '先量再调。没有基线的调优都是玄学。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 50,
         objectives: [
           '为集群建立性能基线',
@@ -575,7 +575,7 @@ export const tracks: Track[] = [
         title: '需求拆解：容量、带宽、IOPS 三条线',
         summary: '客户说"要 1PB 高性能存储"，这句话里缺了至少五个关键参数。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '列出一份完整的存储需求调研清单',
@@ -617,7 +617,7 @@ export const tracks: Track[] = [
         title: '性能估算与瓶颈定位',
         summary: '在采购之前就算出这套配置能跑多快，以及第一个瓶颈会出现在哪。',
         kind: 'planner',
-        status: 'planned',
+        status: 'ready',
         minutes: 35,
         objectives: [
           '按盘、网络、CPU 三条线分别估算上限',
@@ -637,7 +637,7 @@ export const tracks: Track[] = [
         title: '方案对比：什么时候不该用 Ceph',
         summary: '开源不等于便宜。把授权费、运维成本、技术支持一起算进去。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '按场景对比 Ceph / GPFS ECE / Weka / VastData / XSKY',
@@ -674,7 +674,7 @@ export const tracks: Track[] = [
         title: 'GPFS / Storage Scale 概念与 ECE 架构',
         summary: 'NSD、文件系统、集群角色 —— 换一套术语体系，但底层问题还是那些。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 40,
         objectives: [
           '说清 NSD、failure group、filesystem、cluster 的关系',
@@ -695,7 +695,7 @@ export const tracks: Track[] = [
         title: '实验：GPFS ECE 部署与调优',
         summary: '从网络规划到 recovery group，把一套 ECE 集群跑起来。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 70,
         objectives: [
           '完成 ECE 集群的规划与部署',
@@ -720,7 +720,7 @@ export const tracks: Track[] = [
         title: 'GPFS Day-2：多租户、快照与扩容',
         summary: 'fileset、配额、CES 导出、集群扩容，企业环境的日常。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 50,
         objectives: [
           '用 fileset 与配额做多租户隔离',
@@ -745,7 +745,7 @@ export const tracks: Track[] = [
         title: 'K8s 存储模型：PV、PVC、SC 与 CSI',
         summary: '容器时代的存储接口层，运维和开发在这里分工。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 35,
         objectives: [
           '说清 PV / PVC / StorageClass 三者的职责边界',
@@ -766,7 +766,7 @@ export const tracks: Track[] = [
         title: '实验：ceph-csi 与 gpfs-csi 接入',
         summary: '把后端存储真正接进 K8s，并跑通快照。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 50,
         objectives: [
           '部署 ceph-csi 并创建可用的 StorageClass',
@@ -792,7 +792,7 @@ export const tracks: Track[] = [
         title: '商业方案巡礼：Weka / VastData / XSKY',
         summary: '知道市面上有什么、各自强在哪，选型时才不会只会推 Ceph。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 35,
         objectives: [
           '说出三家方案的架构特点与典型场景',
@@ -818,7 +818,7 @@ export const tracks: Track[] = [
         title: '可观测性：指标、告警与容量水位',
         summary: '值班靠的不是手快，是提前两周就看到容量要满了。',
         kind: 'lab',
-        status: 'planned',
+        status: 'ready',
         minutes: 40,
         objectives: [
           '搭起存储集群的指标采集与看板',
@@ -839,7 +839,7 @@ export const tracks: Track[] = [
         title: '值班手册：SOP 与故障复盘',
         summary: '把前面所有知识固化成可交接的流程，这才是工程师的产出物。',
         kind: 'concept',
-        status: 'planned',
+        status: 'ready',
         minutes: 30,
         objectives: [
           '写出一份别人能照着执行的处置 SOP',

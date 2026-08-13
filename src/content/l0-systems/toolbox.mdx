@@ -1,0 +1,183 @@
+## 把前面几节串成一套手法
+
+到这里，L0 的知识点已经齐了。这一节不引入新概念，而是把工具组织成**可复用的动作**：遇到什么问题，按什么顺序，敲哪些命令。
+
+工具分两类，代价完全不同：
+
+| 类型 | 代表 | 开销 | 什么时候用 |
+| --- | --- | --- | --- |
+| **静态计数器** | vmstat、iostat、sar、ss | 几乎为零 | 常态巡检、第一轮定位 |
+| **动态追踪** | perf、bpftrace、biosnoop | 有开销，需谨慎 | 定位到范围后，抓具体证据 |
+
+顺序永远是：**先用零开销的工具收敛范围，再用追踪工具挖根因**。反过来做，你会在生产机器上跑一个高开销的 trace，然后被业务方投诉。
+
+## 压测：fio 的四件套
+
+压测不是"跑个分"，是**回答一个具体问题**。先想清楚问题，再选参数。
+
+```bash
+# 1. 顺序写 —— 回答"这块盘的写带宽上限是多少"
+fio --name=seqwrite --filename=/dev/nvme0n1 --rw=write \
+    --bs=1M --iodepth=32 --numjobs=4 --ioengine=libaio --direct=1 \
+    --runtime=60 --time_based --group_reporting
+
+# 2. 顺序读 —— 回答"读带宽上限"
+fio --name=seqread ... --rw=read --bs=1M ...
+
+# 3. 随机写 —— 回答"数据库类负载能跑多少 IOPS"
+fio --name=randwrite ... --rw=randwrite --bs=4k --iodepth=64 ...
+
+# 4. 随机读 —— 回答"元数据类负载能跑多少 IOPS"
+fio --name=randread ... --rw=randread --bs=4k --iodepth=64 ...
+```
+
+必须理解的几个参数：
+
+| 参数 | 含义 | 常见错误 |
+| --- | --- | --- |
+| `--direct=1` | 绕过 page cache | **忘了加，测出的是内存速度** |
+| `--bs` | 块大小 | 不写块大小的 IOPS 数字没有意义 |
+| `--iodepth` | 单线程队列深度 | 只测 iodepth=1 会低估设备能力 |
+| `--numjobs` | 并发线程数 | 单线程压不满 NVMe |
+| `--time_based --runtime` | 按时间跑而非按数据量 | 不加可能只测到 SSD 的缓存区间 |
+
+<Callout type="trap" title="三个让压测结果失真的经典错误">
+1. **忘了 `--direct=1`** —— HDD 跑出 3GB/s，测的是 page cache
+2. **测试时长太短** —— SSD 有 SLC 缓存，前 30 秒很快，之后掉到稳态。至少跑 5 分钟才能看到真实的稳态性能
+3. **在生产盘上跑写测试** —— `--filename=/dev/nvme0n1` 会直接覆盖裸设备上的数据。**动手前先确认这块盘是空的**
+</Callout>
+
+## 压测：elbencho 测共享文件系统
+
+fio 测的是单机块设备。共享文件系统（CephFS、GPFS）需要**多客户端并发**才能压出真实能力，这时用 elbencho——它由 BeeGFS 创始人开发，一个工具覆盖了 fio、mdtest、ior 的功能，同时支持文件系统、S3 和块设备。
+
+```bash
+# 大文件带宽：多客户端并发写
+elbencho -w -b 4M -t 16 --direct -s 100g /mnt/cephfs/bench/file
+
+# 多文件（元数据）性能：这才是共享文件系统真正的考验
+elbencho -w -d -n 100 -N 10000 -s 4k -t 16 /mnt/cephfs/bench
+
+# 块设备：一次压多块盘，验证整机能力
+elbencho -w -b 4M -t 48 --direct -s 100g /dev/nvme{0..11}n1
+```
+
+<Callout type="tip" title="裸盘压测顺便验证 PCIe 是否掉速">
+压测裸盘时同步开一个 `iostat -xm 1` 观察。经验值：NVMe 单盘写入约 5 GB/s，如果实测差得远，先怀疑 PCIe 链路降速：
+
+```bash
+lspci -vvv | grep 'Non-Volatile'          # 拿到 PCIe 地址，如 5a:00.0
+lspci -s 5a:00.0 -vvv | grep 'Speed'
+#   LnkCap: Speed 16GT/s, Width x4
+#   LnkSta: Speed 16GT/s (ok), Width x1 (downgraded)   ← 掉到 x1 了
+```
+
+出现 `downgraded` 说明链路宽度或速率没跑满，通常是插槽、转接卡或 BIOS 设置的问题。**这类硬件问题必须在集群部署前发现**，否则上线后会表现为某几个 OSD 莫名其妙地慢。
+</Callout>
+
+## 动态追踪：bpftrace 一行流
+
+当静态工具告诉你"盘的平均延迟是 15ms"，但你需要知道**是谁在发这些慢 I/O**，就该上 bpftrace 了。
+
+```bash
+# 1. I/O 延迟分布直方图 —— 看清长尾
+biolatency-bpfcc 10 1
+
+# 2. 逐条打印 I/O，含进程名、扇区、延迟
+biosnoop-bpfcc | head -40
+
+# 3. 按进程统计 I/O 大小
+bpftrace -e 'tracepoint:block:block_rq_issue { @[comm] = hist(args->bytes); }'
+
+# 4. 抓超过 100ms 的慢 I/O 及其调用栈
+bpftrace -e 'kprobe:blk_account_io_done /nsecs/ { ... }'
+```
+
+`biolatency` 的输出最能说明问题：
+
+```
+     usecs               : count     distribution
+         0 -> 127        : 84213    |████████████████████████████████████████|
+       128 -> 255        : 12043    |█████                                   |
+       256 -> 511        : 3211     |█                                       |
+    ...
+     16384 -> 32767      : 89       |                                        |   ← 长尾在这
+```
+
+平均延迟可能只有 0.2ms，但这 89 个 16ms 以上的请求，就是业务侧感知到的卡顿来源。
+
+<Callout type="warn" title="生产环境用追踪工具的纪律">
+- 先在测试机上验证命令，不要在生产上现敲现试
+- 限定运行时长（`timeout 30 bpftrace ...`），不要开着就走
+- 高频事件（如每次内存分配）不要 trace，开销可能压垮机器
+- 记录你做了什么、什么时候做的，方便事后关联业务抖动
+</Callout>
+
+## 压测报告怎么写才有说服力
+
+跑完数字只是原料。一份能用于决策的报告要包含：
+
+```markdown
+## 测试环境
+- 硬件：8 × Dell R750，每节点 12 × 7.68TB NVMe，2 × 25GbE
+- 软件：Ceph 20.2.1，3 副本，pg_num=256
+- 客户端：4 台，与存储节点独立
+
+## 测试方法
+- 工具：fio 3.35 / elbencho 3.1-7
+- 参数：见附录完整命令行
+- 每组跑 300 秒，取稳态区间；每组重复 3 次取中位数
+
+## 结果
+| 场景 | 块大小 | 队列深度 | IOPS | 带宽 | 平均延迟 | P99 延迟 |
+| ... |
+
+## 结论与瓶颈判断
+- 顺序写在 11.2 GB/s 见顶，与 cluster 网理论上限吻合 → 瓶颈在网络
+- 4K 随机写 IOPS 未达单盘能力之和的 50% → 需进一步排查
+
+## 未覆盖的场景
+- 未测试恢复期间的性能衰减
+- 未测试多租户混合负载
+```
+
+<Callout type="tip" title="最后一段最重要">
+"未覆盖的场景"这一段决定了报告的可信度。**明确说出没测什么，比把测了的部分吹得天花乱坠更专业**——因为看报告的人需要知道风险在哪。
+</Callout>
+
+<Quiz
+  id="tool-1"
+  question="用 fio 测一块企业级 NVMe 的顺序写，跑了 30 秒得到 6.8 GB/s，远超厂商标称的 5 GB/s。最可能的原因是？"
+  options={[
+    { text: '这块盘性能超出标称，是好事', feedback: '大幅超出标称值通常意味着测试方法有问题，而不是中彩票。' },
+    { text: '忘了加 --direct=1，测的是 page cache', correct: true },
+    { text: 'PCIe 链路超频了', feedback: 'PCIe 不会自动超频。' },
+    { text: '块大小设得太大', feedback: '块大小影响效率但不会让结果超过物理上限。' },
+  ]}
+  explain={<>
+    没有 --direct=1 时数据先进 page cache，write() 立刻返回，测到的是内存带宽。
+    另一个常见原因是测试时长太短，只覆盖了 SSD 的 SLC 缓存区间——所以要 --time_based 跑够 5 分钟看稳态。
+  </>}
+/>
+
+<Quiz
+  id="tool-2"
+  question="iostat 显示某块盘平均延迟只有 0.3ms，但业务方反馈偶发卡顿。下一步最该做什么？"
+  options={[
+    { text: '相信平均值，判断不是存储问题', feedback: '平均值恰恰是最容易掩盖长尾的指标。' },
+    { text: '用 biolatency 看延迟分布直方图，确认是否存在长尾', correct: true },
+    { text: '直接换盘', feedback: '没有任何证据支持换盘。' },
+    { text: '扩容集群', feedback: '偶发卡顿与容量无关。' },
+  ]}
+  explain={<>偶发卡顿 = 长尾问题。平均值看不到，必须看分布。biolatency 的直方图能直接暴露那几十个 16ms 以上的请求，再用 biosnoop 定位到具体进程。</>}
+/>
+
+## 这节课的落点
+
+- 先用零开销的静态工具收敛范围，再用 bpftrace 类工具挖根因
+- fio 四件套：顺序读写测带宽、随机读写测 IOPS；`--direct=1` 必加，时长要够
+- elbencho 用于多客户端压共享文件系统，尤其是多文件元数据场景
+- 裸盘压测顺便用 `lspci` 查 PCIe 是否 downgraded，这类硬件问题要在上线前发现
+- 报告必须写清方法、环境和**未覆盖的场景**
+
+L0 到此结束。你已经具备了在任何一台 Linux 机器上定位性能问题的基本能力——接下来把这套能力用到分布式存储上。

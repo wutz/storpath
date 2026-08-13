@@ -1,0 +1,201 @@
+## 另一条路线：让 K8s 来管 Ceph
+
+Rook 是一个 Kubernetes Operator，它把"部署和运维 Ceph"这件事翻译成了 CRD。你写一份 `CephCluster` 的 YAML，Operator 负责把 MON、OSD、MGR 拉起来并持续维持这个状态。
+
+**什么时候选 Rook**：存储与计算在同一个 K8s 集群，团队已经熟悉 K8s，希望存储也纳入声明式管理。
+
+**什么时候选 cephadm**：独立存储集群服务多个计算集群，或者存储节点不想装 K8s。
+
+<Callout type="note" title="Operator 帮你做了什么，又藏了什么">
+**帮你做的**：自动发现磁盘、自动拉起守护进程、节点故障时自动重建、配置漂移时自动纠正。
+
+**藏起来的**：所有操作都隔了一层 CRD。当 OSD 起不来时，你要同时会看 K8s 的事件、Operator 的日志、以及 Ceph 自己的状态——**排障链路比 cephadm 长**。这是选择 Rook 必须接受的代价。
+</Callout>
+
+## 第 1 步：给存储节点打标签
+
+Rook 通过节点标签决定把 Ceph 部署到哪些机器上。
+
+```bash
+kubectl label node sn-10-0-20-1 node-role.kubernetes.io/storage=true
+kubectl label node sn-10-0-20-2 node-role.kubernetes.io/storage=true
+kubectl label node sn-10-0-20-3 node-role.kubernetes.io/storage=true
+```
+
+## 第 2 步：部署 Operator
+
+```bash
+kubectl apply -k operator/
+
+# 等 operator 就绪
+kubectl wait -n rook-ceph --for=condition=ready pod -l app=rook-ceph-operator
+```
+
+## 第 3 步：CephCluster —— 这份 YAML 是核心
+
+```yaml
+apiVersion: ceph.rook.io/v1
+kind: CephCluster
+metadata:
+  name: rook-ceph
+  namespace: rook-ceph
+spec:
+  cephVersion:
+    image: quay.io/ceph/ceph:v20.2.1
+
+  network:
+    provider: host                 # 用宿主机网络，性能好于 CNI
+    addressRanges:
+      public:
+        - 172.18.0.0/20            # 客户端访问网段
+      cluster:
+        - 192.168.152.0/24         # 副本复制网段
+
+  placement:
+    all:                           # OSD 等数据面组件只上存储节点
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/storage
+                  operator: Exists
+      tolerations:
+        - operator: Exists
+          effect: NoSchedule
+    mon:                           # MON 放到管理节点上
+      nodeAffinity:
+        requiredDuringSchedulingIgnoredDuringExecution:
+          nodeSelectorTerms:
+            - matchExpressions:
+                - key: node-role.kubernetes.io/control-plane
+                  operator: Exists
+
+  resources:
+    osd:
+      limits:
+        memory: "16Gi"
+      requests:
+        cpu: "4"
+        memory: "8Gi"
+```
+
+三个要点：
+
+1. **`network.provider: host`** —— 走宿主机网络而不是 CNI，减少一层封装开销。生产环境几乎都这么配
+2. **`public` 与 `cluster` 分离** —— 与上一阶段讲的道理完全一致。**只有一条网络时要把整个 `cluster` 段删掉**，而不是填成同一个网段
+3. **`resources.osd`** —— 这里的 memory limit 对应 cephadm 里的 `osd_memory_target` 概念。给少了恢复时会被 OOMKilled
+
+```bash
+kubectl apply -k cluster/
+kubectl get cephclusters -n rook-ceph -w
+kubectl describe cephcluster rook-ceph -n rook-ceph
+```
+
+<Callout type="warn" title="placement 写错的后果">
+如果不加 `nodeAffinity`，Operator 会尝试在**所有**节点上部署 OSD，包括没有数据盘的计算节点。结果是一堆 `osd-prepare` Pod 反复失败重启，日志刷屏。
+
+同样，MON 如果没有反亲和约束而被调度到同一台机器上，那台机器一挂 quorum 就没了——K8s 层的调度错误会直接变成存储层的可用性事故。
+</Callout>
+
+## 第 4 步：运维入口
+
+Rook 环境下不能直接敲 `ceph` 命令，有两个入口：
+
+```bash
+# 方式一（推荐）：kubectl-rook-ceph 插件
+kubectl krew install rook-ceph
+kubectl rook-ceph ceph -s
+kubectl rook-ceph ceph osd tree
+kubectl rook-ceph ceph health detail
+
+# 方式二：部署 toolbox Pod
+kubectl apply -k toolbox/
+kubectl -n rook-ceph exec -it deploy/rook-ceph-tools -- bash
+# 进去之后就是熟悉的 ceph 命令了
+ceph -s
+```
+
+## 第 5 步：排查 OSD 起不来
+
+这是 Rook 环境最高频的问题，排查要顺着三层往下走：
+
+```bash
+# 第 1 层：K8s —— Pod 在不在，事件说了什么
+kubectl -n rook-ceph get pod -o wide | grep osd
+kubectl -n rook-ceph describe pod <osd-prepare-pod>
+
+# 第 2 层：Operator —— 它在尝试做什么
+kubectl -n rook-ceph logs -l app=rook-ceph-operator --tail=100
+
+# 第 3 层：osd-prepare 作业 —— 为什么这块盘没被接受
+kubectl -n rook-ceph logs <osd-prepare-pod>
+
+# 最后回到 Ceph 自己
+kubectl rook-ceph ceph osd tree
+```
+
+`osd-prepare` 的日志里最常见的拒绝原因和 cephadm 一样：盘上有残留的分区表、LVM 或文件系统签名。
+
+```bash
+# 在宿主机上确认并清理（务必先确认盘号）
+lsblk
+wipefs -a /dev/nvme1n1
+dd if=/dev/zero of=/dev/nvme1n1 bs=1M count=100
+```
+
+<Callout type="tip" title="Rook 与 cephadm 的能力对照">
+| | cephadm | Rook |
+| --- | --- | --- |
+| 部署方式 | 命令式 | 声明式 CRD |
+| 排障链路 | 短，直接看 systemd 和 ceph | 长，要穿过 K8s → Operator → Ceph |
+| 自愈能力 | 弱，靠人 | 强，Operator 持续调谐 |
+| 适合 | 独立存储集群 | 存算一体 |
+| CSI | 需单独部署 ceph-csi | Operator 自带 |
+
+**两者管的是同一个 Ceph**，底层概念完全通用。学会一个，另一个只是操作界面的差别。
+</Callout>
+
+<Quiz
+  id="rook-1"
+  question="Rook 集群里 osd-prepare Pod 反复失败，日志显示磁盘被拒绝。最可能的原因是？"
+  options={[
+    { text: '磁盘上有残留的分区表或 LVM 签名', correct: true },
+    { text: 'K8s 版本太低', feedback: '版本不兼容会在 Operator 启动时就报错。' },
+    { text: 'CephCluster 的 image 拉取失败', feedback: '拉不到镜像时 Pod 会卡在 ImagePullBackOff，不会进到检查磁盘这一步。' },
+    { text: '副本数配置错误', feedback: '与 OSD 能否创建无关。' },
+  ]}
+  explain={<>和 cephadm 的 REJECT REASONS 是同一类问题：出于防误擦的考虑，Ceph 不会碰任何带数据痕迹的盘。在宿主机上 wipefs 清理后，Operator 会自动重试。</>}
+/>
+
+<Quiz
+  id="rook-2"
+  question="某 Rook 集群只有一条物理网络。CephCluster 里该怎么配 network 段？"
+  options={[
+    { text: '把 public 和 cluster 填成同一个网段', feedback: '这不会带来任何收益，只会让排查时多一层困惑。' },
+    { text: '整个移除 cluster 配置，只保留 public', correct: true },
+    { text: '随便填一个不存在的网段给 cluster', feedback: '会导致 OSD 之间无法通信。' },
+    { text: '不配 network 段，用 CNI 默认网络', feedback: '可行但性能更差；且题目问的是只有一条网时怎么处理网段配置。' },
+  ]}
+  explain={<>官方部署文档明确写着这一点：只有一条网络就删掉 cluster 段。分离的价值来自物理隔离，逻辑上假装分离毫无意义。</>}
+/>
+
+<Quiz
+  id="rook-3"
+  question="在 Rook 环境里想看集群健康状态，正确的做法是？（多选）"
+  options={[
+    { text: 'kubectl rook-ceph ceph -s', correct: true },
+    { text: '部署 toolbox 后 exec 进去执行 ceph -s', correct: true },
+    { text: 'kubectl describe cephcluster rook-ceph -n rook-ceph 看 CR 状态', correct: true },
+    { text: '在宿主机上直接执行 ceph -s', feedback: '宿主机上没有安装 ceph 客户端，也没有 keyring——所有守护进程都在容器里。' },
+  ]}
+  explain={<>Rook 环境的一切都在容器内，运维入口要么是 kubectl-rook-ceph 插件，要么是 toolbox Pod。CR 的 status 字段则提供了 K8s 视角的摘要。</>}
+/>
+
+## 这节课的落点
+
+- Rook 用 CRD 声明式管理 Ceph，代价是排障链路变长
+- 节点标签 + `placement` 决定组件落在哪，写错会直接变成可用性事故
+- `network.provider: host` 是生产标配；只有一条网就删掉 `cluster` 段
+- 运维入口是 `kubectl rook-ceph` 或 toolbox，不能在宿主机直接敲 ceph
+- OSD 起不来按 K8s → Operator → prepare 作业 → Ceph 四层顺序排查
+- Rook 和 cephadm 管的是同一个 Ceph，概念完全通用

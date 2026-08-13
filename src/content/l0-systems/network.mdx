@@ -1,0 +1,172 @@
+## 分布式存储把网络放进了 I/O 路径
+
+单机存储的写入路径不出机箱。分布式存储不一样：写一个 4KB 的块，要等副本通过网络落到另外两台机器上才能返回。**网络的每一次抖动，都会原样变成业务侧的写延迟。**
+
+所以在分布式存储里，网络不是"周边设施"，它就是一块硬盘——而且是路径上最容易出问题的那块。
+
+## 先把带宽的账算清楚
+
+网络带宽用 bit 计，存储吞吐用 Byte 计，差 8 倍。这个换算每天都要用：
+
+```
+25 Gbps ÷ 8 = 3.125 GB/s   （理论线速）
+实际可用约 90%              ≈ 2.8 GB/s
+100 Gbps ÷ 8 = 12.5 GB/s   ≈ 11.2 GB/s 实际
+```
+
+现在把副本算进去。**3 副本写入时，主 OSD 收到 1 份数据，要向外发出 2 份**：
+
+```
+客户端 → 主 OSD：       1× 数据量（走 public network）
+主 OSD → 两个副本：      2× 数据量（走 cluster network）
+```
+
+所以一套 3 副本集群，如果客户端写入 1 GB/s，cluster network 上要跑 2 GB/s。**规划时 cluster network 的带宽需求是 public network 的 (N-1) 倍。**
+
+<Callout type="tip" title="一道必会的估算题">
+8 节点集群，每节点 2 × 25GbE，前后端分离（各 25Gbps）。3 副本下集群的写带宽上限是多少？
+
+- 每节点 cluster 网可用 ≈ 2.8 GB/s，8 节点合计 22.4 GB/s
+- 每写 1 份数据要在 cluster 网上产生 2 份流量 → 22.4 ÷ 2 = **11.2 GB/s**
+- 再看 public 网：8 × 2.8 = 22.4 GB/s，不是瓶颈
+- 再看盘：假设每节点 12 块 NVMe，写带宽远超 2.8 GB/s，也不是瓶颈
+
+结论：**这套配置的写入瓶颈在 cluster 网络**，约 11 GB/s。想再高就得上 100GbE，而不是加盘。
+</Callout>
+
+## public 与 cluster 网分离
+
+Ceph 支持把两类流量分到不同网络：
+
+| 网络 | 承载什么 | 特点 |
+| --- | --- | --- |
+| **public network** | 客户端 ↔ OSD/MON 的请求 | 流量 = 业务量 |
+| **cluster network** | OSD ↔ OSD 的副本、恢复、再平衡 | 流量 = 业务量 ×(N-1)，恢复时会暴涨 |
+
+分离的收益不只是带宽翻倍，更重要的是**隔离恢复流量**。一块盘坏了触发重建时，cluster 网上会突然出现大量流量；如果和客户端流量共享一条网，业务延迟会立刻恶化。
+
+```bash
+# cephadm 引导时指定
+cephadm bootstrap --mon-ip 100.68.20.1 --cluster-network 10.68.20.0/20
+
+# 事后修改
+ceph config set mon public_network "100.68.20.0/20"
+ceph config set global cluster_network "10.68.20.0/20"
+```
+
+<Callout type="warn" title="只有一条网时不要硬凑">
+如果物理上只有一条网络，**不要**把 public 和 cluster 配成同一个网段来"假装分离"——这不会带来任何收益，反而让排查时多一层困惑。Rook 的配置文档里也明确写着：只有一条网络就直接移除 network 段。
+</Callout>
+
+## MTU、bonding 与常见坑
+
+### MTU 9000（巨帧）
+
+默认 MTU 1500 意味着 1MB 的数据要拆成约 700 个包，每个包都有协议头和中断开销。改成 9000 后包数降到约 1/6，CPU 软中断压力显著下降。
+
+```bash
+ip link set ens1f0 mtu 9000
+ip link show ens1f0 | grep mtu
+```
+
+<Callout type="trap" title="MTU 必须端到端一致">
+路径上任何一跳（服务器、交换机、路由）MTU 不一致，都会导致大包被丢弃或分片。症状很有迷惑性：**小包能通、ping 能通、大文件传输却卡死**。验证方法是发不允许分片的大包：
+
+```bash
+# -M do 禁止分片，-s 8972 = 9000 - 28 字节头部
+ping -M do -s 8972 100.68.20.2
+```
+
+通了才说明整条路径的巨帧是通的。这条命令请记住，它能省下你半天时间。
+</Callout>
+
+### bonding
+
+存储节点做双网卡绑定，常用两种模式：
+
+| 模式 | 说明 | 适用 |
+| --- | --- | --- |
+| `mode=1`（active-backup） | 主备，只用一张卡 | 只要冗余，不要带宽叠加 |
+| `mode=4`（802.3ad / LACP） | 链路聚合，需要交换机配合 | 要冗余也要带宽 |
+
+注意 LACP 的哈希策略：默认按 MAC 哈希，如果存储集群里节点数少、连接数少，可能出现**流量全压在一条物理链路上**。改成 `xmit_hash_policy=layer3+4`（按 IP + 端口哈希）能分散得更好。
+
+## 排障：看重传，别只看带宽
+
+网络质量的直接指标是**重传率**，不是带宽利用率。
+
+```bash
+# TCP 重传统计
+sar -n ETCP 1 5
+```
+
+```
+        active/s passive/s    iseg/s    oseg/s  atmptf/s  estres/s retrans/s
+        1.00     0.00      88234.00  91002.00      0.00      0.00     412.00
+                                                                     ↑ 重传
+```
+
+重传率 = retrans / oseg。**持续超过 0.1% 就要查了**，超过 1% 业务一定有感知。
+
+```bash
+# 网卡层面的丢包与错误
+ip -s link show ens1f0
+ethtool -S ens1f0 | grep -iE 'drop|err|discard'
+
+# 看是不是接收缓冲区太小
+ethtool -g ens1f0
+
+# 连接状态与队列积压
+ss -tin | head -20
+```
+
+<Callout type="note" title="RDMA / RoCE 值不值得上">
+RDMA 绕过内核协议栈直接读写对端内存，能把延迟从几十微秒降到几微秒，CPU 开销也大幅下降。GPFS ECE、Weka 这类高性能方案普遍依赖它。
+
+代价是**它要求无损网络**：交换机要配 PFC、ECN，配错了会出现死锁式的全网卡顿，排查难度远高于普通 TCP。经验判断：如果团队没有能独立调 PFC/ECN 的网络工程师，先用 100GbE TCP 把业务跑起来，比上 RoCE 更稳妥。
+</Callout>
+
+<Quiz
+  id="net-1"
+  question="一套 3 副本 Ceph 集群，客户端持续写入 2 GB/s。cluster network 上大约会有多少流量？"
+  options={[
+    { text: '2 GB/s，和客户端写入量相同', feedback: '主 OSD 还要把数据分发给其它副本。' },
+    { text: '4 GB/s', correct: true },
+    { text: '6 GB/s', feedback: '主 OSD 自己那一份走的是 public 网，cluster 网上只有另外 2 份。' },
+    { text: '1 GB/s', feedback: '副本流量只会比业务量大，不会更小。' },
+  ]}
+  explain={<>3 副本 = 主 OSD 保留 1 份 + 向外复制 2 份。cluster 网承载的是那 2 份，即 2 × 2 = 4 GB/s。规划口径：cluster 网需求 = 业务写入 ×(副本数 − 1)。</>}
+/>
+
+<Quiz
+  id="net-2"
+  question="改了 MTU 9000 之后，ping 正常、小文件传输正常，但大文件传输卡死。最可能的原因？"
+  options={[
+    { text: '路径上有一跳的 MTU 仍是 1500，大包被丢弃', correct: true },
+    { text: '网卡驱动不支持巨帧', feedback: '不支持的话设置 MTU 时就会直接报错。' },
+    { text: '磁盘写满了', feedback: '磁盘满会报 No space，不是传输卡死。' },
+    { text: 'TCP 窗口太小', feedback: '窗口小表现为吞吐上不去，而不是卡死。' },
+  ]}
+  explain={<>用 <code>ping -M do -s 8972 &lt;对端&gt;</code> 验证：普通 ping 用的是小包，发现不了这个问题。MTU 必须端到端一致，包括所有交换机端口。</>}
+/>
+
+<Quiz
+  id="net-3"
+  question="下面哪些是判断网络质量的有效手段？（多选）"
+  options={[
+    { text: 'sar -n ETCP 看 TCP 重传率', correct: true },
+    { text: 'ethtool -S 看网卡丢包与错误计数', correct: true },
+    { text: 'ping -M do 发大包验证 MTU 一致性', correct: true },
+    { text: '看带宽利用率是否达到 100%', feedback: '利用率高只说明在满负荷工作，不代表质量差；反过来利用率低也可能因为丢包严重。' },
+  ]}
+  explain={<>网络的"饱和度"信号是重传和丢包，不是带宽利用率——这与 USE 方法里区分 Utilization 和 Saturation 是同一个思路。</>}
+/>
+
+## 这节课的落点
+
+- Gbps ÷ 8 = GB/s，副本写入让 cluster 网流量 = 业务量 ×(N−1)
+- 估算集群写带宽要同时看盘、public 网、cluster 网，取最小值
+- 前后端分离的核心价值是隔离恢复流量，只有一条网就别假装分离
+- MTU 9000 收益明显，但必须端到端一致，用 `ping -M do` 验证
+- 网络质量看重传率和丢包，0.1% 是警戒线
+- RoCE 性能好但要求团队有能力调无损网络，否则先上 TCP

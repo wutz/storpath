@@ -1,0 +1,242 @@
+## 这一节要做什么
+
+把一套 ECE 集群从零跑起来：预检 → 集群定义 → 安装 → 创建 recovery group 与文件系统 → 调优。
+
+<Callout type="warn" title="ECE 是商业软件">
+GPFS / Storage Scale 需要 IBM 授权，安装包从 IBM Fix Central 下载。没有授权的情况下无法实际部署这一节的内容。
+
+但**流程和参数仍然值得掌握**：你会在面试、方案评审、和厂商沟通时用到，也能理解为什么它的性能比 CephFS 高。
+</Callout>
+
+## 第 0 步：预检（这一步决定成败）
+
+ECE 对环境的要求比 Ceph 严格得多，预检没做干净后面会反复返工。
+
+```bash
+# 1. 操作系统：必须 EL8 / EL9
+cat /etc/redhat-release
+
+# 2. 名称解析：必须是 "IP FQDN 短名" 三段格式，所有节点一致
+cat /etc/hosts
+# 192.168.1.101 sn001.example.com  sn001
+# 192.168.1.102 sn002.example.com  sn002
+# 192.168.1.103 sn003.example.com  sn003
+# 192.168.1.200 gui01.example.com  gui01
+
+# 3. 关闭防火墙
+pdsh -w ^all systemctl disable firewalld --now
+
+# 4. 时间同步
+pdsh -w ^all dnf install -y chrony
+pdsh -w ^all 'sed -i "s/^pool.*/pool ntp.aliyun.com iburst/" /etc/chrony.conf'
+pdsh -w ^all systemctl enable chronyd --now
+pdsh -w ^all chronyc sources
+
+# 5. 节点间 root 免密
+# 6. 安装最新版 Mellanox OFED（用 RDMA 时必需）
+```
+
+<Callout type="trap" title="/etc/hosts 的三段格式不是可选的">
+必须是 `<IP> <FQDN> <短名>` 三段，且所有节点的文件内容完全一致。少了 FQDN 或者各节点内容不同步，集群创建会以各种难以定位的方式失败。
+
+这是 GPFS 部署里最高频的翻车点，没有例外。部署前用 `pdsh -w ^all md5sum /etc/hosts` 确认所有节点的 hosts 文件哈希一致。
+</Callout>
+
+## 第 1 步：规划节点角色
+
+在写集群定义之前，先把角色分配想清楚：
+
+| 角色 | 数量规则 | 说明 |
+| --- | --- | --- |
+| **quorum node** | 4 节点→3；5~6 节点→5；≥7 节点→7 | 维持集群一致性 |
+| **manager node** | 至少 2 个 | 每个文件系统指定一个作 File System Manager，也承担 token 管理 |
+| **RG 主节点** | 每个 RG 一个 | 恢复组的管理入口 |
+| **CES node** | 按需 | 提供 NFS/SMB/S3 导出 |
+| **GUI node** | 1~2 个 | GPFS CSI 依赖 GUI 的 REST API |
+
+<Callout type="warn" title="CES 节点要独占，且网络要分开">
+官方要求：高性能环境下 CES 节点除导出服务外**不应运行其它工作负载**；并且 CES 协议访问用的网络，必须与 ECE 内部流量使用**不同的物理网卡和网络**。
+
+理由和 Ceph 的 public/cluster 分离一样：导出服务的客户端流量会和 ECE 的纠删码流量抢带宽，而后者是数据路径的一部分。
+</Callout>
+
+## 第 2 步：容量与 EC 规划
+
+按 L1 和 L3 学的方法算，但要注意 ECE 特有的两项开销：
+
+```
+可用容量 = 裸容量 × EC 效率 × (1 - spare 空间比例) × 水位
+```
+
+- **EC 效率**：按节点数选方案（见上一节的推荐表）
+- **spare 空间**：ECE 会预留备用空间用于 RAID 重建，这部分不可用
+- 元数据：官方经验是预留约 10%
+
+**declustered array（DA）** 是 ECE 的一个重要概念：同一 RG 内所有节点的同类磁盘组成一个分散阵列，数据和校验分散到 DA 的所有磁盘上。这样重建时**所有盘一起参与**，重建速度远快于传统 RAID 的"往一块热备盘写"。
+
+扩容 DA 的硬性规则：
+
+```
+· 新盘必须与 DA 中现有磁盘类型相同
+· RG 中所有节点必须添加相同数量的新盘
+· 建议一次添加与现有盘数相同的数量（使 DA 空间翻倍）
+```
+
+## 第 3 步：网络规划
+
+```
+数据网（ECE 内部）：25Gbps 起，推荐 100Gbps，用 RDMA 时需 OFED + 无损网络配置
+管理网：千兆即可，用于 SSH、GUI、监控
+CES 网（如果有）：独立物理网卡
+```
+
+## 第 4 步：安装
+
+ECE 用安装工具包（installation toolkit）部署，流程是：
+
+```
+1. 网络和硬件预检查（工具包自带 mmnetverify 等检查）
+2. 集群定义（声明节点、角色、RG）
+3. 执行安装
+```
+
+```bash
+# 从 IBM Fix Central 下载并解压安装包
+./Storage_Scale_ECE-5.2.x.x-x86_64-Linux-install --silent
+
+# 定义集群
+cd /usr/lpp/mmfs/5.2.x.x/ansible-toolkit
+./spectrumscale setup -s <安装节点IP>
+./spectrumscale node add sn001 -so -q -m       # storage / quorum / manager
+./spectrumscale node add sn002 -so -q -m
+./spectrumscale node add sn003 -so -q
+./spectrumscale node add gui01 -g -a           # gui / admin
+./spectrumscale recoverygroup define -N sn001,sn002,sn003
+
+# 预检 + 安装
+./spectrumscale install --precheck
+./spectrumscale install
+```
+
+## 第 5 步：创建 vdisk 与文件系统
+
+```bash
+# 查看 recovery group 与 declustered array
+mmvdisk recoverygroup list
+mmvdisk recoverygroup list --recovery-group rg01 --all
+
+# 定义 vdisk set：指定 EC 方案、容量占比、块大小
+mmvdisk vdiskset define --vdisk-set vs01 \
+  --recovery-group rg01 --code 8+2p --block-size 16M --set-size 80%
+
+# 创建 vdisk
+mmvdisk vdiskset create --vdisk-set vs01
+
+# 用 vdisk set 创建文件系统
+mmvdisk filesystem create --file-system fs1 --vdisk-set vs01
+
+# 挂载
+mmmount fs1 -a
+mmlsfs fs1
+mmdf fs1
+```
+
+<Callout type="note" title="block-size 怎么选">
+GPFS 的块大小对性能影响很大，而且**创建后不能改**。
+
+- 大文件顺序读写为主（AI 训练、HPC）→ 8M / 16M
+- 小文件多、元数据密集 → 1M / 4M
+- 混合负载 → 4M 起步
+
+选错了只能重建文件系统。所以这个决定要在需求调研阶段就问清楚：平均文件大小是多少。
+</Callout>
+
+## 第 6 步：调优（收益非常明显）
+
+这几个参数是 GPFS 调优的核心，来自实际项目的经验值：
+
+```bash
+# ---------- 吞吐 ----------
+# maxMBpS：单节点允许的读写数据流最大速率，缺省 2048
+# GPFS 用它来计算给顺序访问分配多少预读/后台写线程
+# 建议设为每节点最大网络吞吐的 2 倍，上限 100000
+# 例：4 × 200Gb 网络 → 4×200×1000/8×2 = 200000，超过上限则取 100000
+mmchconfig maxMBpS=100000
+mmdiag --config | grep maxMBpS
+
+# workerThreads：处理并发文件系统请求的工作线程池大小
+mmchconfig workerThreads=3072      # 存储集群
+mmchconfig workerThreads=1024      # 客户端集群
+
+# ---------- 元数据（对 read & stat 提升巨大）----------
+# maxFilesToCache：每节点可缓存的完整 inode 数，每个约占 3K~10K 内存
+mmchconfig maxFilesToCache=3M      # 存储集群
+mmchconfig maxFilesToCache=1M      # 客户端集群
+
+# maxStatCache：缓存的文件属性数量，每个约占 400~500 字节
+# 只记基本属性（够响应 ls -l），不足以直接读写
+mmchconfig maxStatCache=4M         # 存储集群
+mmchconfig maxStatCache=1M         # 客户端集群
+
+# ---------- 改完必须重启守护进程 ----------
+mmshutdown -a && mmstartup -a
+mmgetstate -a
+```
+
+<Callout type="tip" title="为什么元数据缓存参数收益这么大">
+`maxFilesToCache` 和 `maxStatCache` 直接决定了 `ls`、`stat` 这类操作能否命中内存。海量小文件场景下调对这两个参数，元数据性能提升往往是数量级的。
+
+注意算清内存：`3M × 8K ≈ 24GB` 只是 inode 缓存，加上 `4M × 500B ≈ 2GB` 的 stat 缓存，还有 pagepool。**这些内存必须在容量规划时就算进去**，否则调完参数节点直接 OOM。
+</Callout>
+
+<Quiz
+  id="gpfsd-1"
+  question="GPFS 集群创建失败，报各种奇怪的节点通信错误。最该先检查什么？"
+  options={[
+    { text: '/etc/hosts 是否为「IP FQDN 短名」三段格式且所有节点完全一致', correct: true },
+    { text: '磁盘容量是否足够', feedback: '集群创建阶段还不涉及数据盘。' },
+    { text: 'EC 方案是否选对', feedback: 'EC 在创建 vdisk 阶段才涉及。' },
+    { text: '重装操作系统', feedback: '代价过大且没有针对问题。' },
+  ]}
+  explain={<>
+    这是 GPFS 部署的头号翻车点。用 <code>pdsh -w ^all md5sum /etc/hosts</code> 确认所有节点哈希一致，
+    并检查每行是否都有 FQDN 和短名两个字段。
+  </>}
+/>
+
+<Quiz
+  id="gpfsd-2"
+  question="改了 maxFilesToCache 之后用 mmlsconfig 能看到新值，但性能没有变化。最可能的原因？"
+  options={[
+    { text: '参数没有生效，需要重启 GPFS 守护进程', correct: true },
+    { text: '参数值设得太小', feedback: '题目说的是完全没有变化，先要确认是否生效。' },
+    { text: '这个参数对性能没影响', feedback: '它对元数据性能影响很大。' },
+    { text: '需要重新创建文件系统', feedback: '缓存参数不需要重建文件系统。' },
+  ]}
+  explain={<>
+    <code>mmlsconfig</code> 显示配置里写了什么，<code>mmdiag --config</code> 显示实际生效值。
+    多数参数需要 <code>mmshutdown -a &amp;&amp; mmstartup -a</code> 才生效。这个区别是 GPFS 排障的基本功。
+  </>}
+/>
+
+<Quiz
+  id="gpfsd-3"
+  question="关于 ECE 部署，下面哪些是硬性要求？（多选）"
+  options={[
+    { text: '同一 recovery group 内所有节点的 CPU、内存、网络、磁盘配置必须一致', correct: true },
+    { text: '所有由 ECE 管理的驱动器必须禁用易失性写缓存', correct: true },
+    { text: '每台服务器至少一块 SSD/NVMe 用于 ECE 日志', correct: true },
+    { text: '必须使用 RDMA 网络，不支持 TCP', feedback: 'RDMA 能带来更好性能但不是硬性要求；硬性要求是节点间 25Gbps 以上。' },
+  ]}
+  explain={<>前三条都写在官方硬件要求里。第一条对采购影响最大：扩容时买不到同型号机器，就只能新建 RG。</>}
+/>
+
+## 这节课的落点
+
+- 预检决定成败，`/etc/hosts` 三段格式 + 全节点一致是头号坑
+- 角色规划先做：quorum 数按节点数定，CES 要独占且网络分开
+- DA 让所有盘参与重建，这是 ECE 重建快的原因；扩容有严格的同型号同数量规则
+- `block-size` 创建后不可改，必须先问清平均文件大小
+- 四个核心调优参数：`maxMBpS`、`workerThreads`、`maxFilesToCache`、`maxStatCache`
+- 调元数据缓存前先算内存，否则直接 OOM
+- 改完参数要 `mmshutdown -a && mmstartup -a`，并用 `mmdiag --config` 验证生效

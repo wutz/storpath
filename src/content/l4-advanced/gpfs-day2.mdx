@@ -1,0 +1,214 @@
+## 企业环境的日常
+
+GPFS 的 Day-2 和 Ceph 的 Day-2 关注点不同。Ceph 那边主要是盘和 PG，GPFS 这边更多是**多租户、配额、导出和扩容**——因为它通常部署在需要给多个部门/项目分配空间的企业环境里。
+
+## fileset 与配额：多租户的基础
+
+fileset 是 GPFS 里可独立管理的子树，相当于"带配额和快照能力的目录"。
+
+```bash
+# 创建独立 fileset（--inode-space new 让它有独立的 inode 空间，性能更好）
+mmcrfileset fs1 tenant-a --inode-space new
+mmlinkfileset fs1 tenant-a -J /gpfs/fs1/tenant-a
+
+# 设置配额：块配额（容量）与 inode 配额（文件数）
+mmsetquota fs1:tenant-a --block 40T:50T --files 10M:12M
+#                                soft:hard        soft:hard
+
+# 查看
+mmlsfileset fs1 -L
+mmrepquota -j fs1                # 按 fileset 报配额
+mmlsquota -j tenant-a fs1
+```
+
+soft limit 触发告警并开始宽限期，hard limit 直接拒绝写入。
+
+<Callout type="trap" title="配额只能在 owning cluster 上设置">
+这是多集群架构的一个现实痛点：**配额设置只能在拥有集群（owning cluster）上执行**，而拥有集群的管理员通常不是业务方，于是每次调配额都要走工单流程。
+
+实际项目里这往往成为交付瓶颈，常见做法是自行开发一层管理工具，把配额操作封装成自助服务接口。规划多租户方案时要把这个流程成本算进去。
+</Callout>
+
+## 三种多租户方案的取舍
+
+这是 GPFS 多租户设计的核心决策，三种粒度对应完全不同的交付成本：
+
+| 方案 | 隔离粒度 | 起步容量 | 交付周期 | 原生 GPFS CSI | 元数据隔离 |
+| --- | --- | --- | --- | --- | --- |
+| **每租户一个存储集群** | 物理集群 | 500T 以上 | 3~7 天 | 支持 | 物理隔离 |
+| **每租户一个文件系统** | 文件系统 | 50T 起步/步长 | 1 天以内 | 需第三方工具 | 共享磁盘，有竞争 |
+| **每租户一个 fileset** | fileset | 任意 | 0.5 天以内 | 需第三方工具 | 共享磁盘，竞争严重 |
+
+各自的代价：
+
+- **独立集群**：性能完全物理隔离、功能最完整。但起步容量大（用不完就是空置）、建设周期长、集群数量多了交付人力撑不住
+- **独立文件系统**：能按 50T 步长满足中等需求、交付快。但 50T 步长仍不够细；GUI 的 CSI 权限**不能按文件系统维度控制**，所以用不了原生 GPFS CSI，只能用功能更弱的第三方 CSI
+- **独立 fileset**：容量任意、交付最快。但 root fileset 空间不隔离（要靠 QoS 缓解），元数据竞争最严重
+
+<Callout type="warn" title="GPFS 不支持元数据 IOPS 的 QoS">
+这是三种方案里除物理集群隔离外**共同的硬伤**：GPFS 的 QoS 能限制数据 IOPS，但**限不了元数据 IOPS**。
+
+后果是多租户场景下，一个疯狂创建/删除小文件的租户会拖慢所有人，而你没有手段限制它。这也是为什么"重要客户 + 大容量"场景仍然推荐独立物理集群。
+
+选型时这条要主动向客户说明，不要等出问题了才解释。
+</Callout>
+
+## CES：对外提供 NFS / SMB
+
+不装 GPFS 客户端的机器，通过 CES 访问：
+
+```bash
+# 部署 CES（需要预先规划独立的 CES IP 池和独立物理网络）
+mmces service enable NFS
+mmces service enable SMB
+mmces address add --ces-ip 10.0.30.101,10.0.30.102
+
+# 创建 NFS 导出
+mmnfs export add /gpfs/fs1/tenant-a \
+  --client "10.0.40.0/24(Access_Type=RW,Squash=no_root_squash)"
+
+mmnfs export list
+mmces state show
+mmces node list
+```
+
+<Callout type="note" title="CES 的性能取舍">
+走 CES 的客户端相当于用 NFS 访问 GPFS，会丢掉 GPFS 原生客户端的并行访问优势——**性能通常只有原生客户端的一半甚至更低**。
+
+所以：性能敏感的计算节点装原生客户端（accessing cluster 方式），只有零散的、无法安装客户端的机器才走 CES。
+</Callout>
+
+## 快照
+
+```bash
+# 文件系统级快照
+mmcrsnapshot fs1 snap-20260813
+
+# fileset 级快照（多租户场景更常用）
+mmcrsnapshot fs1 snap-20260813 -j tenant-a
+
+mmlssnapshot fs1
+```
+
+```
+Snapshots in file system fs1:
+Directory        SnapId  Status  Created                   ExpirationTime
+snap1            1       Valid   Thu Mar 12 14:52:08 2026
+snap2            2       Valid   Thu Mar 12 14:52:22 2026
+```
+
+恢复文件：快照以只读目录形式挂在 `.snapshots` 下，直接拷回来即可。
+
+```bash
+# 对比两个快照里同一个文件
+cd /gpfs/fs1/.snapshots
+diff -Nur snap1/tenant-a/data.txt snap2/tenant-a/data.txt
+
+# 恢复
+cp /gpfs/fs1/.snapshots/snap1/tenant-a/data.txt /gpfs/fs1/tenant-a/data.txt
+
+# 删除快照（快照会占空间，必须有清理策略）
+mmdelsnapshot fs1 snap1
+```
+
+<Callout type="warn" title="快照必须有过期策略">
+快照占用空间随源数据变化量增长。没有清理策略的话，快照会慢慢把文件系统吃满——而且用户看不到这部分占用，排查时容易困惑。
+
+标准做法：用 `mmcrsnapshot` 配合定时任务，保留策略写成"日快照留 7 天、周快照留 4 周"，并做好监控。**和 Ceph 的快照一样，它不是备份**：快照和源数据在同一套存储上。
+</Callout>
+
+## 扩容
+
+```bash
+# 加节点
+mmaddnode -N sn004:manager
+mmchlicense server --accept -N sn004
+mmstartup -N sn004
+
+# 加盘到 recovery group（注意 DA 的同型号同数量规则）
+mmvdisk server list --disk-topology
+mmvdisk recoverygroup change --recovery-group rg01 --declustered-array DA1 ...
+
+# 扩容 vdisk set 与文件系统
+mmvdisk vdiskset change --vdisk-set vs01 --set-size 90%
+mmvdisk filesystem add --file-system fs1 --vdisk-set vs01
+
+# 再平衡（新盘加入后让数据重新分布）
+mmrestripefs fs1 -b
+```
+
+`mmrestripefs -b` 会产生大量 I/O，务必在业务低峰执行，必要时用 `-N` 限定参与的节点。
+
+## 审计与诊断
+
+```bash
+# 健康状态
+mmhealth cluster show
+mmhealth node show --verbose
+
+# 性能监控（GPFS 自带的 perfmon）
+mmperfmon query gpfsNSDDiskWaitTime
+mmperfmon query cpu,memory
+
+# 审计日志（需要 DME 版本）
+mmaudit fs1 list
+mmaudit fs1 enable --log-fileset audit
+
+# 抓诊断数据交给 IBM 支持
+gpfs.snap
+```
+
+<Callout type="tip" title="gpfs.snap 是报障的入场券">
+向 IBM 提交 case 时，第一件事就是要 `gpfs.snap` 的输出。它会收集配置、日志、状态快照。
+
+**故障发生时尽早采集**——等你自己折腾一圈之后再采集，现场已经被破坏，支持团队也难以定位。这个习惯适用于所有商业存储。
+</Callout>
+
+<Quiz
+  id="gpfs2-1"
+  question="客户要求为 8 个部门提供隔离的 GPFS 空间，每个部门 20T 左右，且要求元数据性能互不影响。最合适的方案是？"
+  options={[
+    { text: '每个部门一个 fileset，交付最快', feedback: '交付快，但元数据竞争最严重，不满足"互不影响"的要求。' },
+    { text: '每个部门一个文件系统', feedback: '比 fileset 好，但仍共享底层磁盘，元数据仍有竞争，且 50T 起步不匹配 20T 需求。' },
+    { text: '每个部门一个独立存储集群', correct: true },
+    { text: '所有部门共用 root fileset，靠目录权限隔离', feedback: 'root fileset 对所有访问集群可见，且没有任何性能隔离。' },
+  ]}
+  explain={<>
+    因为 GPFS 不支持元数据 IOPS 的 QoS，只有物理集群隔离才能真正做到元数据性能互不影响。
+    但要向客户说明代价：8 套集群的起步容量和交付人力都很大——这时更该做的是回去确认「互不影响」是不是真需求。
+  </>}
+/>
+
+<Quiz
+  id="gpfs2-2"
+  question="关于 GPFS 快照，下面哪些说法正确？（多选）"
+  options={[
+    { text: '可以在文件系统级或 fileset 级创建', correct: true },
+    { text: '快照以只读目录形式出现在 .snapshots 下，可直接拷贝恢复', correct: true },
+    { text: '必须配置过期清理策略，否则会逐渐占满文件系统', correct: true },
+    { text: '快照可以替代异地备份', feedback: '快照和源数据在同一套存储上，集群级故障会一起丢失。' },
+  ]}
+  explain={<>和 Ceph 快照的定位完全一致：防误删和回滚，不防灾难。而且 GPFS 快照的空间占用用户侧看不见，必须靠监控和清理策略管住。</>}
+/>
+
+<Quiz
+  id="gpfs2-3"
+  question="向 IBM 报障时，最应该在什么时候采集 gpfs.snap？"
+  options={[
+    { text: '故障发生后尽早采集，在自己大量操作之前', correct: true },
+    { text: '等自己排查完确认解决不了再采集', feedback: '此时现场已被大量操作破坏，日志被覆盖，支持团队难以定位。' },
+    { text: '故障恢复之后采集', feedback: '恢复后的状态没有故障现场信息。' },
+    { text: '不需要采集，描述清楚现象就行', feedback: '商业支持流程通常要求提供诊断包才受理。' },
+  ]}
+  explain={<>保护现场是所有故障处理的通则。商业存储尤其如此——诊断包是提交 case 的入场券，采集越早信息越完整。</>}
+/>
+
+## 这节课的落点
+
+- fileset + 配额是多租户基础，但配额只能在 owning cluster 上设，流程成本要算进去
+- 三种多租户方案的取舍：物理集群（隔离最好、成本最高）→ 文件系统 → fileset（最快、竞争最严重）
+- GPFS **不支持元数据 IOPS 的 QoS**，这是多租户方案选择的决定性因素
+- CES 方便但性能只有原生客户端一半，性能敏感场景装原生客户端
+- 快照必须有过期策略，且不是备份
+- 扩容遵循 DA 的同型号同数量规则，`mmrestripefs` 要在低峰做
+- 故障发生后尽早 `gpfs.snap`，保护现场

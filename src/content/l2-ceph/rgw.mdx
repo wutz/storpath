@@ -1,0 +1,226 @@
+## 把 RADOS 包成一个 S3
+
+RGW（RADOS Gateway）是一个 HTTP 服务，它把 S3 / Swift API 翻译成 RADOS 操作。和 RBD、CephFS 不同，客户端不需要装任何 Ceph 客户端——**一个 HTTP 请求就够了**。
+
+```
+S3 客户端 ──HTTP──> RGW ──librados──> RADOS
+                     │
+                     └─ 自己也要存元数据（用户、bucket、对象索引）
+```
+
+RGW 会自动创建一组池：
+
+| 池 | 存什么 | 冗余建议 |
+| --- | --- | --- |
+| `.rgw.root` | realm / zonegroup / zone 配置 | 副本 |
+| `<zone>.rgw.meta` | 用户、bucket 元数据 | 副本 |
+| `<zone>.rgw.log` | 使用日志、GC 队列 | 副本 |
+| `<zone>.rgw.buckets.index` | **bucket 内对象的索引** | 副本，**必须 SSD** |
+| `<zone>.rgw.buckets.data` | 对象数据本体 | 可以 EC |
+
+<Callout type="warn" title="index 池是 RGW 的命门">
+`buckets.index` 存的是每个 bucket 里所有对象名的有序索引。它的特征是：**小对象、高频随机读写、omap 密集**。
+
+放在 HDD 上，`ls` 一个大 bucket 会慢到超时；单个 bucket 对象数过多（百万级以上）时，索引分片不足还会导致写入阻塞。这是自建对象存储最常见的性能事故来源。
+
+务必：index 池用副本 + SSD，data 池才用 EC。
+</Callout>
+
+## 部署
+
+```bash
+# cephadm
+ceph orch apply rgw s3 --placement="3" --port=8080
+
+# 确认
+ceph orch ps --daemon-type rgw
+curl http://ceph-node1:8080
+```
+
+返回一段 XML 的 `ListAllMyBucketsResult` 就说明 RGW 起来了。
+
+生产环境前面通常挂负载均衡：cephadm 可以直接部署 ingress（haproxy + keepalived），提供 VIP 和健康检查。
+
+```bash
+ceph orch apply ingress --backend-service rgw.s3 \
+  --virtual-ip 10.0.20.100/24 --frontend-port 80 --monitor-port 8999
+```
+
+## 用户与访问
+
+```bash
+# 创建用户
+radosgw-admin user create --uid=app1 --display-name="App One"
+```
+
+```json
+{
+    "user_id": "app1",
+    "keys": [{
+        "user": "app1",
+        "access_key": "AKIAIOSFODNN7EXAMPLE",
+        "secret_key": "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"
+    }],
+    "bucket_quota": { "enabled": false, "max_size": -1, "max_objects": -1 }
+}
+```
+
+```bash
+# 配额
+radosgw-admin quota set --uid=app1 --quota-scope=user --max-size=10T
+radosgw-admin quota enable --uid=app1 --quota-scope=user
+
+# 用量统计
+radosgw-admin user stats --uid=app1
+radosgw-admin bucket stats --bucket=mybucket
+```
+
+Rook 环境下用户由 CRD 创建，密钥放在 Secret 里：
+
+```bash
+kubectl -n rook-ceph get secret rook-ceph-object-user-s3-rgw-rgw-default-user \
+  -o jsonpath='{.data.AccessKey}' | base64 --decode
+kubectl -n rook-ceph get secret rook-ceph-object-user-s3-rgw-rgw-default-user \
+  -o jsonpath='{.data.SecretKey}' | base64 --decode
+```
+
+## 客户端验证
+
+```bash
+aws configure set aws_access_key_id AKIAIOSFODNN7EXAMPLE
+aws configure set aws_secret_access_key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY
+
+# 自建 RGW 通常要用 path-style
+aws configure set default.s3.addressing_style path
+
+aws --endpoint-url http://10.0.20.100 s3 mb s3://testbucket
+aws --endpoint-url http://10.0.20.100 s3 cp bigfile.tar s3://testbucket/
+aws --endpoint-url http://10.0.20.100 s3 ls s3://testbucket/
+```
+
+<Callout type="trap" title="接入 RGW 的三个高频报错">
+| 报错 | 原因 | 处理 |
+| --- | --- | --- |
+| `SignatureDoesNotMatch` | 客户端与 RGW 时间差超过 15 分钟 | 先查 NTP |
+| 域名解析失败 / `NoSuchBucket` | 用了 virtual-hosted 风格但没配泛域名 DNS | 改用 path-style，或配 `*.s3.example.com` |
+| `RequestTimeTooSkewed` | 同第一条 | 同上 |
+
+**先查时间同步**几乎是条件反射。
+</Callout>
+
+## bucket 分片：海量对象的关键
+
+一个 bucket 的索引默认分成若干片，每片是一个 RADOS 对象。片数不够时，写入会集中到少数几个 OSD 上形成热点。
+
+```bash
+# 查看当前分片数
+radosgw-admin bucket stats --bucket=mybucket | grep num_shards
+
+# 新建 bucket 的默认分片数（按预期对象数规划：每片 10 万对象）
+ceph config set client.rgw rgw_override_bucket_index_max_shards 64
+
+# 对已有 bucket 重新分片（会短暂阻塞该 bucket 的写入）
+radosgw-admin bucket reshard --bucket=mybucket --num-shards=128
+```
+
+规划口径：**每个索引分片约 10 万个对象**。预计存 1000 万对象的 bucket，分片数应在 100 以上。
+
+<Callout type="warn" title="动态 reshard 的代价">
+新版本 RGW 支持自动 reshard，但重分片期间该 bucket 的写入会被阻塞（大 bucket 可能持续几分钟）。多站点复制场景下自动 reshard 还可能引发同步问题。
+
+**最好的办法是建 bucket 时就把分片数设够**，而不是等它长大了再补救。
+</Callout>
+
+## 生命周期与分段上传
+
+```json
+{
+  "Rules": [
+    {
+      "ID": "abort-incomplete-uploads",
+      "Status": "Enabled",
+      "Filter": {"Prefix": ""},
+      "AbortIncompleteMultipartUpload": {"DaysAfterInitiation": 7}
+    },
+    {
+      "ID": "expire-old-logs",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "logs/"},
+      "Expiration": {"Days": 90}
+    }
+  ]
+}
+```
+
+```bash
+aws --endpoint-url http://10.0.20.100 s3api put-bucket-lifecycle-configuration \
+  --bucket mybucket --lifecycle-configuration file://lifecycle.json
+
+# 查看 RGW 的生命周期执行情况
+radosgw-admin lc list
+radosgw-admin lc process       # 手工触发一次
+```
+
+第一条规则（7 天清理未完成的分段上传）应该是**每个 bucket 的标配**——上一阶段说过，残留分片是"用量对不上"的头号原因。
+
+## 监控
+
+```bash
+# RGW 自带 Prometheus 指标（由 MGR 的 prometheus 模块暴露）
+ceph mgr module enable prometheus
+curl http://ceph-node1:9283/metrics | grep ceph_rgw
+
+# 开启使用日志，用于计费和审计
+ceph config set client.rgw rgw_enable_usage_log true
+radosgw-admin usage show --uid=app1
+```
+
+<Quiz
+  id="rgw-1"
+  question="自建 RGW 存放海量小对象，运行几个月后写入变慢、ls bucket 经常超时。最该先检查什么？"
+  options={[
+    { text: 'data 池的 EC 配置', feedback: 'EC 影响数据写入效率，但 ls 慢主要是索引问题。' },
+    { text: 'buckets.index 池是否在 SSD 上，以及 bucket 的分片数是否足够', correct: true },
+    { text: '增加 RGW 实例数量', feedback: '瓶颈在索引池而非网关并发，加实例收效有限。' },
+    { text: '客户端网络带宽', feedback: '与带宽无关。' },
+  ]}
+  explain={<>
+    index 池是小对象高频随机访问，必须副本 + SSD；分片数按每片 10 万对象规划。
+    这两点没做对，海量对象场景一定会出问题——这是自建对象存储最经典的坑。
+  </>}
+/>
+
+<Quiz
+  id="rgw-2"
+  question="关于 RGW 的池规划，下面哪些是对的？（多选）"
+  options={[
+    { text: 'buckets.data 池可以用 EC 提高空间效率', correct: true },
+    { text: 'buckets.index 池必须用副本', correct: true },
+    { text: 'index 池应该放在 SSD 上', correct: true },
+    { text: '所有 RGW 池都用 EC 最省空间', feedback: '索引和元数据是小对象随机访问，用 EC 会严重放大 I/O。' },
+  ]}
+  explain={<>规划原则：数据大而顺序 → EC；元数据小而随机 → 副本 + SSD。这个原则在 CephFS 上同样成立。</>}
+/>
+
+<Quiz
+  id="rgw-3"
+  question="新建一个 bucket，预计要存 2000 万个对象。索引分片数该设多少？"
+  options={[
+    { text: '用默认值即可', feedback: '默认分片数远不够 2000 万对象。' },
+    { text: '200 以上（按每片约 10 万对象估算）', correct: true },
+    { text: '10 就够了', feedback: '每片会有 200 万对象，索引对象过大导致写入阻塞。' },
+    { text: '越多越好，设成 10000', feedback: '分片过多会让 list 操作要扫描大量分片，同样有开销。' },
+  ]}
+  explain={<>
+    2000 万 ÷ 10 万 = 200 片。建 bucket 时就设够，避免后续 reshard 阻塞写入。
+    这是一个必须在设计阶段问清楚的问题：这个 bucket 预计存多少对象？
+  </>}
+/>
+
+## 这节课的落点
+
+- RGW 是无状态 HTTP 网关，客户端零依赖
+- index 池必须副本 + SSD，data 池才用 EC
+- 三个高频报错：签名不匹配（查时间）、域名风格、时间偏移
+- bucket 分片按每片 10 万对象规划，建时设够，避免事后 reshard
+- 每个 bucket 都应配「7 天清理未完成分段上传」的生命周期规则

@@ -1,0 +1,229 @@
+## 从池到设备，一条完整链路
+
+RBD（RADOS Block Device）把一个"块设备"拆成很多个固定大小的 RADOS 对象（默认 4MB），条带化分布到整个集群。
+
+```
+一个 100GB 的 RBD image
+  └─ 拆成 25600 个 4MB 对象
+      └─ rbd_data.<image_id>.0000000000000000
+         rbd_data.<image_id>.0000000000000001
+         ...
+         └─ 每个对象按 CRUSH 分布到不同 OSD
+```
+
+这个设计的直接好处：**一个 image 的 I/O 天然分散到整个集群的所有盘上**，而不是集中在几块盘。
+
+## 第 1 步：创建池
+
+```bash
+# 创建池（PG 数交给 autoscaler）
+ceph osd pool create rbd
+
+# 声明用途，让 Ceph 应用对应的默认参数
+ceph osd pool application enable rbd rbd
+
+# 初始化
+rbd pool init rbd
+
+# 确认副本策略
+ceph osd pool get rbd size        # 3
+ceph osd pool get rbd min_size    # 2
+```
+
+<Callout type="warn" title="块存储池不要用 EC">
+上一阶段算过这笔账：EC 会把一次小写放大成 k+m 次分散写，而块存储的负载恰恰以随机小 I/O 为主。**RBD 池默认且应当使用副本**。
+
+Ceph 技术上支持给 RBD 配 EC 数据池（元数据仍需副本池），但那是为归档类冷数据准备的，不要用在虚拟机或数据库场景。
+</Callout>
+
+## 第 2 步：创建并挂载 image
+
+```bash
+# 创建一个 100G 的 image
+rbd create rbd/disk01 --size 100G
+
+# 查看
+rbd ls rbd
+rbd info rbd/disk01
+```
+
+```
+rbd image 'disk01':
+    size 100 GiB in 25600 objects
+    order 22 (4 MiB objects)
+    features: layering, exclusive-lock, object-map, fast-diff, deep-flatten
+```
+
+```bash
+# 映射到本机
+rbd map rbd/disk01           # → /dev/rbd0
+
+# 之后就是一块普通的盘
+mkfs.xfs /dev/rbd0
+mount /dev/rbd0 /mnt/data
+
+# 取消映射
+umount /mnt/data
+rbd unmap /dev/rbd0
+```
+
+<Callout type="trap" title="内核客户端不支持全部 features">
+`rbd map` 用的是内核态客户端，老内核可能不认识某些新特性，报错长这样：
+
+```
+rbd: image disk01: image uses unsupported features: 0x38
+```
+
+处理方式是创建时只开内核支持的特性：
+
+```bash
+rbd create rbd/disk01 --size 100G --image-feature layering
+# 或对已有 image 关掉不支持的
+rbd feature disable rbd/disk01 object-map fast-diff deep-flatten
+```
+
+用户态客户端（librbd，QEMU/KVM 和 CSI 走的路径）支持全部特性，没有这个限制。
+</Callout>
+
+## 第 3 步：快照与克隆
+
+```bash
+# 创建快照（瞬时完成，写时复制）
+rbd snap create rbd/disk01@snap-20260813
+
+rbd snap ls rbd/disk01
+
+# 回滚到快照（会丢失快照之后的所有修改）
+rbd snap rollback rbd/disk01@snap-20260813
+
+# 保护快照后可以克隆出新 image
+rbd snap protect rbd/disk01@snap-20260813
+rbd clone rbd/disk01@snap-20260813 rbd/disk02
+
+# 克隆是"薄"的，只记录差异；flatten 后才独立
+rbd flatten rbd/disk02
+```
+
+克隆的典型用途是**虚拟机模板**：一份基础镜像做快照，克隆出几十台虚拟机的系统盘，只占一份基础镜像的空间。
+
+<Callout type="warn" title="快照不是备份">
+快照和原始数据在同一个集群、同一批盘上。集群级故障、误删池、机房事故会让快照和数据一起消失。
+
+快照解决的是"误删文件"和"回滚到某个时间点"，**不解决"存储集群没了"**。真正的备份必须在另一套系统里（`rbd export` 到对象存储、或用备份软件）。
+</Callout>
+
+## 第 4 步：接到 K8s（ceph-csi-rbd）
+
+```bash
+# 1. 在 Ceph 侧创建给 CSI 用的用户
+ceph auth get-or-create client.kubernetes \
+  mon 'profile rbd' \
+  osd 'profile rbd pool=rbd' \
+  mgr 'profile rbd pool=rbd'
+
+# 2. 拿到集群 ID 和 MON 地址
+ceph fsid
+ceph mon dump
+```
+
+```yaml
+# 3. StorageClass
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: block-ceph
+provisioner: rbd.csi.ceph.com
+parameters:
+  clusterID: 8d2f1c3a-7b41-4c9e-9f2a-5c6d8e0a1b23
+  pool: rbd
+  imageFeatures: layering
+  csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: default
+  csi.storage.k8s.io/node-stage-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/node-stage-secret-namespace: default
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+```
+
+```yaml
+# 4. 申请一个卷
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: data-pvc
+spec:
+  accessModes:
+    - ReadWriteOnce        # 块存储只能 RWO
+  resources:
+    requests:
+      storage: 20Gi
+  storageClassName: block-ceph
+```
+
+<Callout type="trap" title="RBD 只能是 ReadWriteOnce">
+块设备是单挂载语义。把同一个 RBD 挂到两个节点上各自跑 XFS，两边的元数据缓存会互相覆盖，文件系统必然损坏，而且**没有任何报错提示**。
+
+需要多 Pod 共享读写，必须用 CephFS（`ReadWriteMany`）。这个约束不是 K8s 加的，是块存储语义本身决定的。
+</Callout>
+
+## 扩容
+
+```bash
+# Ceph 侧扩容 image
+rbd resize rbd/disk01 --size 200G
+
+# 客户端还要扩文件系统
+xfs_growfs /mnt/data          # XFS
+resize2fs /dev/rbd0           # ext4
+```
+
+K8s 环境下，只要 StorageClass 开了 `allowVolumeExpansion: true`，改 PVC 的 `resources.requests.storage` 即可，CSI 会自动完成两步。
+
+<Quiz
+  id="rbd-1"
+  question="rbd map 报错 image uses unsupported features。原因是什么？"
+  options={[
+    { text: 'image 损坏了', feedback: '这是特性兼容问题，image 本身是好的。' },
+    { text: '内核态客户端不支持该 image 开启的某些特性', correct: true },
+    { text: '集群健康状态异常', feedback: '与集群健康无关。' },
+    { text: '权限不足', feedback: '权限问题会报 auth 相关错误。' },
+  ]}
+  explain={<>
+    用 <code>rbd feature disable</code> 关掉内核不支持的特性，或创建时用 <code>--image-feature layering</code> 只开基础特性。
+    走 librbd 的场景（QEMU、CSI）不受这个限制。
+  </>}
+/>
+
+<Quiz
+  id="rbd-2"
+  question="团队想让 3 个 Pod 同时读写同一份数据，有人建议用 RBD 配 ReadWriteMany。该怎么回应？"
+  options={[
+    { text: '可以，把 accessMode 改成 RWX 就行', feedback: '即使 K8s 允许你写，文件系统也会被写坏。' },
+    { text: '不行，块存储是单挂载语义，多节点同时挂载会损坏文件系统，应该用 CephFS', correct: true },
+    { text: '可以，但要把副本数改成 3', feedback: '副本数与挂载语义无关。' },
+    { text: '可以，只要三个 Pod 都是只读', feedback: '题目明确要求读写。多个只读挂载在特定条件下可行，但不满足需求。' },
+  ]}
+  explain={<>这是块与文件语义差别的直接体现。需要共享读写就用 CephFS 的 RWX，这也是为什么一套集群通常两种都要部署。</>}
+/>
+
+<Quiz
+  id="rbd-3"
+  question="关于 RBD 快照，下面哪些说法正确？（多选）"
+  options={[
+    { text: '快照是写时复制的，创建瞬间完成且几乎不占空间', correct: true },
+    { text: '克隆前需要先 protect 快照', correct: true },
+    { text: '快照不能替代异地备份', correct: true },
+    { text: '快照会自动复制到另一个集群', feedback: '跨集群复制需要单独配置 rbd-mirror。' },
+  ]}
+  explain={<>快照与源数据同生共死，它防的是误操作，不防集群级灾难。要跨集群保护得用 rbd-mirror 或定期 rbd export。</>}
+/>
+
+## 这节课的落点
+
+- RBD 把 image 切成 4MB 对象条带化分布，天然利用全集群的盘
+- 块存储池用副本不用 EC
+- 内核客户端的特性兼容问题用 `--image-feature layering` 规避
+- 快照是写时复制、瞬时完成，但**不是备份**
+- RBD 只能 ReadWriteOnce，这是语义决定的，不是配置限制
+- 扩容要 Ceph 侧和文件系统侧两步，CSI 会自动处理

@@ -1,0 +1,195 @@
+## 没有元数据表，怎么知道数据在哪
+
+传统分布式存储用一张元数据表记录"哪个数据在哪台机器上"。这张表要么放在中心节点（成为瓶颈和单点），要么分布式维护（复杂且要一致性协议）。
+
+Ceph 的答案是：**不记录，直接算。**
+
+```
+对象名 ──哈希──> PG ──CRUSH 算法──> 一组 OSD
+```
+
+客户端拿到 crushmap 之后，本地就能算出任何对象该去哪。没有查询，没有中心节点，客户端数量可以无限扩展。
+
+## 第一步：对象 → PG
+
+```
+pg_id = hash(对象名) % pg_num
+```
+
+就是简单的哈希取模。那为什么要有 PG（Placement Group）这一层，不直接把对象映射到 OSD？
+
+**因为需要一个中间粒度。** 假设集群有 1200 万个对象和 36 个 OSD：
+
+- 直接映射对象到 OSD：要跟踪 1200 万个对象的分布状态，元数据爆炸
+- 引入 PG：把对象分成 673 个组，只跟踪 673 个 PG 的状态
+
+PG 是 Ceph 里**所有状态管理的单位**：恢复、回填、scrub、peering 都是以 PG 为单位进行的。`ceph -s` 里那行 `673 active+clean` 就是在报告这 673 个组的状态。
+
+## 第二步：PG → OSD，CRUSH 登场
+
+CRUSH（Controlled Replication Under Scalable Hashing）输入四样东西：
+
+1. **PG 编号**
+2. **crushmap**：集群的物理拓扑树（root → rack → host → osd）
+3. **CRUSH rule**：选取规则，包括故障域层级和副本数
+4. **osdmap**：哪些 OSD 当前是 up / in
+
+输出是一个有序的 OSD 列表，例如 `[7, 23, 41]`。第一个是 **primary**，负责协调这个 PG 的所有读写。
+
+```bash
+# 亲手推演一次：这个对象在哪
+ceph osd map rbd myobject
+# osdmap e1234 pool 'rbd' (3) object 'myobject' -> pg 3.a7f2c1b8 (3.b8) -> up ([7,23,41], p7) acting ([7,23,41], p7)
+```
+
+这条命令会成为你排障时的常客：**给定一个对象，立刻知道它落在哪几块盘上**。
+
+<Callout type="tip" title="up set 与 acting set 的区别">
+- **up set**：按当前 crushmap 计算出的"应该"负责这个 PG 的 OSD
+- **acting set**：当前"实际"在负责的 OSD
+
+正常情况下两者相同。当某个 OSD 挂了、正在回填、或者被临时接管时，它们会不一致——`up [7,23,41] acting [7,23,55]` 表示 41 出了问题，55 临时顶上。**看到两者不一致，就说明集群处于非稳态。**
+</Callout>
+
+## PG 数量怎么定
+
+PG 太少：每个 PG 承载的数据太多，分布不均、恢复粒度粗。
+PG 太多：每个 OSD 要维护的 PG 状态过多，内存和 CPU 开销上升。
+
+官方经验公式：
+
+```
+pg_num = (OSD 数 × 100) ÷ 副本数     然后向上取到 2 的幂
+
+例：36 个 OSD，3 副本
+    36 × 100 ÷ 3 = 1200 → 取 2048？
+```
+
+但这是**所有池加起来**的总量，要按各池的数据量占比分配。实际操作中现在基本不用手算了：
+
+```bash
+# 开启自动调整（默认已开）
+ceph osd pool set rbd pg_autoscale_mode on
+
+# 看 autoscaler 的建议
+ceph osd pool autoscale-status
+```
+
+```
+POOL                SIZE  TARGET SIZE  RATE  RAW CAPACITY  RATIO  PG_NUM  NEW PG_NUM  AUTOSCALE
+rbd                28.0T               3.0        262.0T  0.3206     256              on
+cephfs.prod.meta  186.0G               3.0        262.0T  0.0021      32              on
+cephfs.prod.data   16.0T               3.0        262.0T  0.1832     256              on
+```
+
+<Callout type="warn" title="调整 pg_num 会触发大规模数据迁移">
+`pg_num` 变化意味着对象到 PG 的映射变了，几乎所有数据都要重新分布。在有数据的集群上调整 PG，会产生长时间的高负载。
+
+因此：**建池时就按预期规模把 PG 设好**，或者依赖 autoscaler 在数据量还小的时候完成调整。如果必须在生产集群上调，务必限速并选在业务低峰。
+</Callout>
+
+## PG 状态机：读懂那些奇怪的组合
+
+`ceph -s` 里 PG 状态是若干标志的组合，常见的有：
+
+| 状态 | 含义 | 该做什么 |
+| --- | --- | --- |
+| `active+clean` | 一切正常 | 无 |
+| `peering` | 副本之间正在协商数据版本 | 等，通常几秒 |
+| `degraded` | 副本数不足 | 等恢复，或查为什么 OSD 没起来 |
+| `undersized` | 实际副本数少于 size | 同上 |
+| `backfilling` | 正在往新 OSD 大批量搬数据 | 等，可限速 |
+| `recovering` | 正在补少量落后的对象 | 等 |
+| `remapped` | acting set 与 up set 不一致 | 通常伴随其它状态 |
+| `inconsistent` | scrub 发现副本内容不一致 | **需要人工介入** |
+| `incomplete` | 缺少足够的历史信息，无法确定正确数据 | **严重，可能丢数据** |
+| `stale` | 长时间没收到该 PG 的状态上报 | 检查 primary OSD 是否失联 |
+
+```bash
+# 找出所有非 active+clean 的 PG
+ceph pg dump_stuck
+
+# 看某个 PG 的详细情况：谁是 primary，卡在哪
+ceph pg 3.1f query
+
+# scrub 发现不一致时的修复
+ceph pg repair 3.1f
+```
+
+<Callout type="trap" title="incomplete 和 inconsistent 完全不是一回事">
+- `inconsistent`：副本内容对不上，但 Ceph 知道谁是对的，`ceph pg repair` 通常能修
+- `incomplete`：Ceph **不知道**正确数据是什么，往往是因为持有最新数据的 OSD 彻底没了
+
+看到 `incomplete` 不要自己乱试命令，先停下来评估：涉及哪些池、哪些数据、有没有备份。这是少数需要向上升级、必要时联系专业支持的场景。
+</Callout>
+
+## CRUSH rule 实操：按机架分布
+
+```bash
+# 查看现有规则
+ceph osd crush rule ls
+ceph osd crush rule dump replicated_rule
+
+# 在拓扑里加入机架层级
+ceph osd crush add-bucket rack1 rack
+ceph osd crush move rack1 root=default
+ceph osd crush move ceph-node1 rack=rack1
+
+# 创建一个按 rack 分布的规则
+ceph osd crush rule create-replicated by-rack default rack
+
+# 让某个池使用它（会触发数据迁移）
+ceph osd pool set rbd crush_rule by-rack
+```
+
+改完一定要复核实际分布，不能只看命令返回成功：
+
+```bash
+ceph osd tree                      # 拓扑对不对
+ceph pg ls-by-pool rbd | head      # 副本是不是真的跨机架了
+```
+
+<Quiz
+  id="crush-1"
+  question="为什么 Ceph 要在对象和 OSD 之间加一层 PG，而不是直接把对象映射到 OSD？"
+  options={[
+    { text: '为了让哈希更均匀', feedback: '均匀性由哈希函数保证，与是否分层无关。' },
+    { text: '为了把状态管理的粒度从上千万个对象降到几百个组', correct: true },
+    { text: '为了支持多副本', feedback: '多副本由 CRUSH rule 决定，不需要 PG 这一层。' },
+    { text: '为了兼容旧版本', feedback: 'PG 从一开始就是核心设计。' },
+  ]}
+  explain={<>恢复、回填、scrub、peering 全部以 PG 为单位。没有这层中间粒度，跟踪 1200 万个对象的状态会让元数据开销失控。</>}
+/>
+
+<Quiz
+  id="crush-2"
+  question="ceph pg dump 显示某 PG 为 up [7,23,41] acting [7,23,55]。这说明什么？"
+  options={[
+    { text: '集群配置错误，需要修改 crushmap', feedback: '这是临时状态，不是配置问题。' },
+    { text: 'osd.41 当前不可用，osd.55 临时接管，集群处于非稳态', correct: true },
+    { text: 'PG 有 4 个副本', feedback: '两个列表描述的是同一个 PG 的应然与实然，不是相加。' },
+    { text: '数据已经丢失', feedback: '仍有 3 个 OSD 在服务这个 PG，数据是安全的。' },
+  ]}
+  explain={<>up 是按 crushmap 算出来的"应该"，acting 是"实际"。两者不一致说明正在恢复或有 OSD 异常，通常还会伴随 remapped、backfilling 等状态。</>}
+/>
+
+<Quiz
+  id="crush-3"
+  question="在一个已经存了 40TB 数据的池上把 pg_num 从 128 改到 512，会发生什么？"
+  options={[
+    { text: '只影响新写入的数据，存量数据不动', feedback: '对象到 PG 的映射是 hash % pg_num，pg_num 变了映射就全变了。' },
+    { text: '几乎所有对象都要重新分布，产生长时间高负载', correct: true },
+    { text: '立即生效且无开销', feedback: '数据要真实搬运。' },
+    { text: '会导致数据丢失', feedback: '迁移过程是安全的，只是慢和重。' },
+  ]}
+  explain={<>这就是为什么要么建池时把 PG 规划好，要么让 autoscaler 在数据量小的时候完成调整。生产上不得不调时，务必限速并选低峰期。</>}
+/>
+
+## 这节课的落点
+
+- 对象 → PG 是哈希取模，PG → OSD 是 CRUSH 计算，全程无需查表
+- PG 是所有状态管理的单位：恢复、回填、scrub、peering
+- `ceph osd map <pool> <object>` 能直接算出对象落在哪几块盘
+- up set 是应然，acting set 是实然，不一致就说明非稳态
+- `pg_num` 变更会引发全量迁移，靠 autoscaler 或前期规划避免
+- `inconsistent` 可以 repair，`incomplete` 要立刻升级处理

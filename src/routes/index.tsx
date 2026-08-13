@@ -32,7 +32,7 @@ function Home() {
     <div className="space-y-10">
       <section className="rounded-2xl border border-gray-200 bg-white px-6 py-8 shadow-sm sm:px-10 sm:py-10">
         <p className="text-xs font-semibold tracking-widest text-brand-600">
-          面向应届毕业生的分布式存储运维学习路径
+          分布式存储运维工程师成长路径
         </p>
         <h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">
           从看懂一条 <code className="rounded bg-gray-100 px-1.5 py-0.5 text-2xl">iostat</code>{' '}

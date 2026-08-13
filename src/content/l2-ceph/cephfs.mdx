@@ -1,0 +1,229 @@
+## CephFS 的甜与苦
+
+CephFS 提供完整的 POSIX 语义：目录树、权限、硬链接、文件锁，多客户端同时读写。开发不用改一行代码。
+
+苦在元数据。数据可以靠加盘线性扩展，**元数据不行**——它需要一个知道整棵目录树的服务，也就是 MDS。
+
+## 架构：数据与元数据分家
+
+```
+客户端 ──元数据操作(open/stat/ls)──> MDS ──> metadata pool（必须副本，建议 SSD）
+   │
+   └────数据读写────────────────────> OSD ──> data pool（可副本可 EC）
+```
+
+关键点：**MDS 不在数据路径上**。客户端从 MDS 拿到文件的位置和权限（cap）之后，直接和 OSD 读写数据。MDS 只处理"这个文件在哪、我能不能动它"。
+
+所以 MDS 的负载正比于**元数据操作次数**，与数据吞吐无关。一个跑满带宽的大文件顺序读几乎不给 MDS 压力；一个疯狂 `ls` 的脚本能把 MDS 打爆。
+
+## 第 1 步：创建文件系统
+
+```bash
+# 元数据池：必须副本，PG 不用多，强烈建议放 SSD
+ceph osd pool create cephfs.prod.meta
+
+# 数据池
+ceph osd pool create cephfs.prod.data
+
+# 创建文件系统
+ceph fs new prod cephfs.prod.meta cephfs.prod.data
+
+# 部署 MDS：2 个（1 主 1 备）
+ceph orch apply mds prod --placement="2"
+
+ceph fs status prod
+```
+
+```
+prod - 3 clients
+====
+RANK  STATE           MDS            ACTIVITY     DNS    INOS   DIRS   CAPS
+ 0    active  prod.ceph-node1.abcdef  Reqs: 42/s  2841k  2839k  118k   1204k
+      POOL           TYPE     USED  AVAIL
+cephfs.prod.meta   metadata   558G  19.0T
+cephfs.prod.data     data     49.0T 19.0T
+STANDBY MDS
+prod.ceph-node2.ghijkl
+```
+
+<Callout type="warn" title="元数据池放 SSD，这不是可选项">
+元数据操作全是小随机 I/O。把 metadata pool 放在 HDD 上，`ls` 一个大目录能等到怀疑人生。
+
+```bash
+# 用 device class 把元数据池限定到 SSD
+ceph osd crush rule create-replicated ssd-rule default host ssd
+ceph osd pool set cephfs.prod.meta crush_rule ssd-rule
+```
+</Callout>
+
+## 第 2 步：挂载
+
+```bash
+# 创建一个受限用户
+ceph fs authorize prod client.app / rw
+
+# 拿到 key
+ceph auth get-key client.app
+
+# 内核客户端挂载（性能更好）
+mount -t ceph app@.prod=/ /mnt/cephfs -o mon_addr=10.0.20.1:6789,secret=<key>
+
+# FUSE 客户端（功能更全，性能略差）
+ceph-fuse -n client.app /mnt/cephfs
+```
+
+| | 内核客户端 | FUSE 客户端 |
+| --- | --- | --- |
+| 性能 | 高 | 低 20% ~ 40% |
+| 特性支持 | 受内核版本限制 | 跟随 Ceph 版本，最全 |
+| 故障影响 | 客户端内核挂了整机受影响 | 只影响用户态进程 |
+| 建议 | **默认选它** | 内核太老、或需要新特性时 |
+
+## 第 3 步：子目录挂载与配额
+
+多租户场景下，不要把整个文件系统给所有人。
+
+```bash
+# 创建目录并设置配额
+mkdir /mnt/cephfs/tenant-a
+setfattr -n ceph.quota.max_bytes -v 10995116277760 /mnt/cephfs/tenant-a   # 10TiB
+setfattr -n ceph.quota.max_files -v 10000000 /mnt/cephfs/tenant-a
+
+# 查看
+getfattr -n ceph.quota.max_bytes /mnt/cephfs/tenant-a
+
+# 授权用户只能访问自己的子目录
+ceph fs authorize prod client.tenant-a /tenant-a rw
+
+# 客户端只挂自己那一段
+mount -t ceph tenant-a@.prod=/tenant-a /mnt/data -o ...
+```
+
+<Callout type="trap" title="CephFS 配额是软约束">
+配额由**客户端**负责执行，不是服务端强制。这意味着：
+
+- 超额后不会立刻停止写入，客户端要过一会儿才感知到（可能超出几百 MB）
+- 恶意或有 bug 的客户端可以绕过配额
+- 老版本内核客户端对配额的支持不完整
+
+所以配额适合用来防止"无意中写爆"，**不能作为强隔离手段**。真正需要硬隔离，得给每个租户单独的文件系统甚至集群。
+</Callout>
+
+## 第 4 步：多活 MDS
+
+单个 MDS 的元数据吞吐有上限。可以横向扩：
+
+```bash
+# 设置 2 个 active MDS
+ceph fs set prod max_mds 2
+
+# 再加一个 standby
+ceph orch apply mds prod --placement="4"
+```
+
+多活 MDS 通过**目录分片**把目录树分给不同 MDS。默认是动态子树分区，也可以手工钉住：
+
+```bash
+# 把某个热点目录钉到 rank 1
+setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/hot-dir
+```
+
+<Callout type="warn" title="多活 MDS 不是无脑加就快">
+跨 MDS 的操作（比如把文件从 rank 0 管的目录 rename 到 rank 1 管的目录）需要 MDS 之间协调，反而更慢。动态子树分区也有迁移开销，在负载抖动时可能来回搬。
+
+经验：**先把单 MDS 的内存调够、把 metadata pool 放 SSD**，这两项的收益通常大于加 MDS。确实撑不住再上多活，并配合手工 pin 把不同业务的目录固定到不同 rank。
+</Callout>
+
+## 第 5 步：MDS 压力排查
+
+```bash
+# 1. 看有没有慢请求
+ceph health detail
+# MDS_SLOW_REQUEST: 1 MDSs report slow requests
+
+# 2. 看 MDS 缓存与请求速率
+ceph fs status prod
+ceph daemon mds.prod.ceph-node1.abcdef perf dump | grep -E 'cache|inode'
+
+# 3. 看是哪个客户端在制造压力
+ceph tell mds.prod.ceph-node1.abcdef client ls | grep -E 'addr|num_caps'
+
+# 4. 调大缓存（默认 4GB，元数据密集场景要加）
+ceph config set mds mds_cache_memory_limit 34359738368   # 32GB
+```
+
+<Callout type="trap" title="为什么说 CephFS 不建议用于 AI 训练">
+AI 训练数据集常是海量小文件。每 epoch 遍历一遍数据集，就是几百万次元数据操作。
+
+MDS 把热元数据放内存，缓存装不下时性能**断崖式**下跌——不是线性变慢，是掉到零头。而缓存大小受限于单台机器的内存，无法通过加节点线性扩展。
+
+这就是 storplan 选型表里"CephFS 元数据缓存受节点内存限制，不足时性能锐减，不建议应用于 AI 场景"的具体含义。这类场景应该看 GPFS、Weka 或 VastData。
+</Callout>
+
+## 接到 K8s
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: shared-ceph
+provisioner: cephfs.csi.ceph.com
+parameters:
+  clusterID: 8d2f1c3a-7b41-4c9e-9f2a-5c6d8e0a1b23
+  fsName: prod
+  pool: cephfs.prod.data
+  csi.storage.k8s.io/provisioner-secret-name: csi-cephfs-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: default
+reclaimPolicy: Delete
+allowVolumeExpansion: true
+```
+
+用它创建的 PVC 支持 `ReadWriteMany`，多个 Pod 可以同时挂载同一个卷——这正是 RBD 做不到的事。
+
+<Quiz
+  id="cephfs-1"
+  question="用户反馈 ls 一个大目录要等十几秒，但读写大文件的带宽正常。最该怀疑什么？"
+  options={[
+    { text: '数据池的盘性能不足', feedback: '数据读写正常，说明数据池没问题。' },
+    { text: 'MDS 缓存不足或元数据池在慢盘上', correct: true },
+    { text: '网络带宽不够', feedback: '带宽不够会同时影响数据读写。' },
+    { text: '客户端内存不足', feedback: '可能性远低于服务端元数据瓶颈。' },
+  ]}
+  explain={<>
+    ls / stat 是纯元数据操作，走 MDS 和 metadata pool；大文件读写走 OSD 和 data pool。
+    两者表现分化，说明问题在元数据侧：先看 mds_cache_memory_limit 够不够，再看 metadata pool 是不是在 SSD 上。
+  </>}
+/>
+
+<Quiz
+  id="cephfs-2"
+  question="关于 CephFS 配额，下面哪些说法正确？（多选）"
+  options={[
+    { text: '由客户端负责执行，不是服务端强制', correct: true },
+    { text: '超额后可能会有一定的超出量，不是精确卡死', correct: true },
+    { text: '适合防止无意中写爆，不适合作为强隔离手段', correct: true },
+    { text: '恶意客户端也无法绕过配额', feedback: '正因为由客户端执行，改造过的客户端是可以绕过的。' },
+  ]}
+  explain={<>理解"配额是软的"很重要：给外部租户做隔离时，配额只是第一道防线，真正的隔离要靠独立文件系统或独立集群。</>}
+/>
+
+<Quiz
+  id="cephfs-3"
+  question="MDS 压力大时，下面哪个措施通常应该最先尝试？"
+  options={[
+    { text: '直接把 max_mds 加到 4', feedback: '多活 MDS 有协调开销和迁移成本，不是第一选择。' },
+    { text: '先调大 mds_cache_memory_limit，并确认元数据池在 SSD 上', correct: true },
+    { text: '增加数据池的 PG 数量', feedback: '与元数据性能无关。' },
+    { text: '让客户端改用 FUSE 挂载', feedback: 'FUSE 性能更低，会让情况更糟。' },
+  ]}
+  explain={<>缓存和元数据盘的收益通常大于加 MDS，而且没有副作用。确实撑不住再上多活，并用 ceph.dir.pin 手工把不同业务钉到不同 rank。</>}
+/>
+
+## 这节课的落点
+
+- MDS 只管元数据，数据由客户端直连 OSD；MDS 负载正比于元数据操作次数
+- metadata pool 必须副本、必须 SSD
+- 内核客户端优先，FUSE 用于内核太老或需要新特性
+- 配额是客户端执行的软约束，不能当强隔离用
+- 多活 MDS 是最后手段，先调缓存和元数据盘
+- 海量小文件（如 AI 训练集）是 CephFS 的软肋，该场景应看 GPFS / Weka / VastData

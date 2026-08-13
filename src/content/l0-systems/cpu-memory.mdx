@@ -1,0 +1,177 @@
+## 为什么存储工程师要关心 CPU 和内存
+
+"盘慢"这个结论，一半以上是错的。存储节点上跑着几十个 OSD 进程，它们要做校验和、要做 EC 编解码、要维护 RocksDB、要收发网络包。这些活全在 CPU 和内存上。
+
+三种最常见的"伪磁盘问题"：
+
+- OSD 进程抢不到 CPU → 请求在软件队列里排，盘其实很闲
+- 内存不够，page cache 被回收 → 原本命中缓存的读全部落到盘上
+- 网卡中断全压在一个核上 → 单核 100%，其余 31 个核闲着
+
+这一节的目标，是让你在说"是盘的问题"之前，先把这三条排掉。
+
+## CPU：先看运行队列，再看时间分布
+
+```bash
+vmstat 1 5
+```
+
+```
+procs -----------memory---------- ---swap-- -----io---- -system-- ------cpu-----
+ r  b   swpd   free   buff  cache   si   so    bi    bo   in   cs us sy id wa st
+18  2      0 4128512  98304 62914560  0    0  8192 40960 98234 187432 41 38 12  9  0
+```
+
+`r = 18` 是关键：**有 18 个线程处于可运行状态，正在等 CPU**。这台机器如果只有 16 核，说明 CPU 已经饱和。`b = 2` 表示有 2 个线程被阻塞在不可中断的 I/O 上。
+
+CPU 时间分布的四个数值各自意味着什么：
+
+| 列 | 含义 | 在存储节点上高了说明 |
+| --- | --- | --- |
+| `us` | 用户态 | OSD 在算校验和 / EC 编码 / 压缩 |
+| `sy` | 内核态 | 系统调用、内存管理、网络协议栈开销大 |
+| `wa` | I/O 等待 | CPU 空着在等盘，通常指向真正的磁盘瓶颈 |
+| `id` | 空闲 | 有余量 |
+
+<Callout type="trap" title="wa 高不等于盘慢">
+`wa` 的定义是"CPU 空闲且至少有一个 I/O 在飞"。如果机器上跑着别的吃 CPU 的任务，CPU 不空闲了，`wa` 反而会显示得很低——盘明明很慢，指标却看不出来。所以 `wa` 只能作为线索，判断盘快不快还是要回到 `iostat` 的 await。
+</Callout>
+
+## 上下文切换与软中断：找出那个被打满的核
+
+`vmstat` 给的是全局平均值，会掩盖单核过载。存储节点上最典型的单核过载来自**网卡中断**：
+
+```bash
+mpstat -P ALL 1 3
+```
+
+```
+CPU    %usr   %sys  %iowait   %irq  %soft  %idle
+all   38.21  31.45     6.12   0.41  11.83  12.98
+  0   12.03  18.44     2.01   3.12  64.22   0.19    ← 这个核被软中断吃光了
+  1   41.55  33.12     6.88   0.22   2.11  16.12
+  2   40.87  32.98     7.02   0.19   1.98  16.96
+```
+
+CPU 0 的 `%soft` 到了 64%、`%idle` 只剩 0.19%——所有网卡中断都压在这一个核上。此时集群的网络吞吐会卡在一个远低于线速的水平，而全局平均值看起来还有 13% 空闲。
+
+排查与处置：
+
+```bash
+# 看中断分布，是否只落在少数几个 CPU 上
+cat /proc/interrupts | grep -E 'eth|ens|mlx' | head
+
+# 看网卡有几个队列，多队列是分散中断的前提
+ethtool -l ens1f0
+
+# irqbalance 有时会把中断绑得很糟，生产上常见做法是关掉它手工绑核
+systemctl status irqbalance
+```
+
+<Callout type="tip" title="判断顺序">
+先看 `mpstat -P ALL` 有没有单核异常，再看全局。**只看 `top` 的平均 CPU 会让你完全错过这类问题**——这是新人最常掉进去的坑之一。
+</Callout>
+
+## NUMA：跨节点访问的隐形损耗
+
+多路服务器上，内存被分成多个 NUMA node，每个 CPU 访问"自己"的内存快，访问隔壁的慢（延迟高 50% 以上，带宽也更低）。
+
+```bash
+numactl --hardware
+```
+
+```
+available: 2 nodes (0-1)
+node 0 cpus: 0 1 2 3 ... 31
+node 0 size: 257655 MB
+node 1 cpus: 32 33 34 ... 63
+node 1 size: 257655 MB
+node distances:
+node   0   1
+  0:  10  21      ← 访问本地是 10，跨节点是 21，差一倍
+  1:  21  10
+```
+
+对存储节点，理想情况是：**NVMe 盘挂在哪个 NUMA node 的 PCIe 上，对应的 OSD 进程就绑在哪个 node 的 CPU 上，内存也从那个 node 分配**。网卡同理。
+
+```bash
+# 查看某块 NVMe 挂在哪个 NUMA node
+cat /sys/class/nvme/nvme0/device/numa_node
+
+# 查看网卡的 NUMA 归属
+cat /sys/class/net/ens1f0/device/numa_node
+
+# 观察是否有大量跨节点内存访问
+numastat -m
+```
+
+<Callout type="warn" title="NUMA 优化的收益与风险">
+绑核能带来 10% ~ 30% 的性能提升，但绑错了会更糟——比如把所有 OSD 都绑到 node 0，node 1 的 CPU 全闲着。**先测量再绑定**，并且把绑定策略写进文档，否则换个人运维就成了黑盒。
+</Callout>
+
+## page cache：存储服务的免费加速器
+
+Linux 会把读过的文件内容缓存在内存里。`free -g` 中的 `buff/cache` 就是它：
+
+```
+              total        used        free      shared  buff/cache   available
+Mem:            503         187           4           0         311         298
+```
+
+看到 `free` 只剩 4GB **不要惊慌**——`available` 才是真正可用的量（298GB），因为 page cache 在需要时会被回收。
+
+但对存储节点，有两件事要盯：
+
+1. **回收压力**：`vmstat` 的 `si/so` 一旦持续大于 0，说明在换页，性能会断崖式下跌。存储节点上应该**关闭 swap 或把 swappiness 调到很低**。
+2. **脏页回写**：写入先进 page cache 变成脏页，由内核后台回写。脏页积累太多时会触发同步回写，表现为写入突然卡顿几秒。
+
+```bash
+# 查看当前脏页量
+grep -E 'Dirty|Writeback' /proc/meminfo
+
+# 控制脏页水位（存储节点建议调小，让回写更平滑）
+sysctl vm.dirty_background_ratio    # 后台回写触发点，默认 10
+sysctl vm.dirty_ratio               # 同步阻塞触发点，默认 20
+```
+
+<Callout type="trap" title="OSD 内存不是 free 里那个 free">
+`osd_memory_target` 默认 4GB，是 OSD **自己管理的缓存目标**，不含 page cache。规划内存时按「OSD 数 × osd_memory_target + 系统与其它服务预留」来算。参考实际项目的经验值：256GB 内存的节点，OSD 总内存控制在 192GB 以内——32 盘时每 OSD 6GB，24 盘时每 OSD 8GB。
+</Callout>
+
+<Quiz
+  id="cpu-1"
+  question="mpstat -P ALL 显示 all 行的 %idle 是 13%，但 CPU 0 的 %soft 高达 64%、%idle 为 0。最可能的问题是？"
+  options={[
+    { text: '整机 CPU 不足，需要扩容', feedback: '还有 13% 空闲，且其它核负载正常，整机并未饱和。' },
+    { text: '网卡中断集中在单核，网络吞吐会被这个核卡住', correct: true },
+    { text: '内存不足导致频繁换页', feedback: '换页表现为 si/so，不是 %soft。' },
+    { text: '磁盘饱和拖慢了 CPU', feedback: '磁盘压力体现在 %iowait，不在 %soft。' },
+  ]}
+  explain={<>
+    %soft 是软中断时间，网络收发包的大头就在这里。单核被打满而其它核空闲，说明中断没有分散到多队列上。
+    检查 ethtool -l 的队列数和 /proc/interrupts 的分布。
+  </>}
+/>
+
+<Quiz
+  id="cpu-2"
+  question="一台 256GB 内存的存储节点插了 32 块盘。按经验值，osd_memory_target 应该设成多少比较合理？"
+  options={[
+    { text: '4GB，用默认值就行', feedback: '默认值适合小节点，32 盘时会浪费大量内存。' },
+    { text: '6GB 左右，让 OSD 总内存控制在 192GB 以内', correct: true },
+    { text: '8GB，把内存吃满', feedback: '32 × 8 = 256GB，等于把全部内存给 OSD，系统和恢复期开销无处安放。' },
+    { text: '越大越好，设成 16GB', feedback: '会直接 OOM。' },
+  ]}
+  explain={<>
+    经验口径是 OSD 总内存不超过物理内存的 75%：256 × 0.75 ≈ 192GB，除以 32 盘约 6GB。
+    剩下的要留给系统、page cache 以及恢复期间的额外开销——恢复时 OSD 内存占用会明显高于平时。
+  </>}
+/>
+
+## 这节课的落点
+
+- `vmstat` 的 `r` 列是 CPU 饱和度，比使用率更有判断力
+- `wa` 高只是线索，不能直接推出盘慢
+- 一定要用 `mpstat -P ALL` 看单核，网卡软中断打满单核是常见隐形瓶颈
+- NUMA 亲和性值 10% ~ 30% 的性能，但要先测量再绑
+- 存储节点关 swap、控脏页水位，OSD 内存按总量不超过 75% 反推每 OSD 目标值

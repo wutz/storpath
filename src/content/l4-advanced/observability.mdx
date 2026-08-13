@@ -1,0 +1,248 @@
+## 值班靠的不是手快
+
+新人值班的典型状态：等告警响，然后手忙脚乱地查。资深工程师的状态：**两周前就知道这块盘要坏、这个池要满了**。
+
+差别不在技术水平，在有没有把可观测性建起来。这一节讲怎么建。
+
+## 三层指标来源
+
+```
+第 1 层：节点层
+  node_exporter → CPU、内存、磁盘 I/O、网络、SMART
+
+第 2 层：存储服务层
+  Ceph：mgr 的 prometheus 模块（默认端口 9283）
+  GPFS：mmperfmon / ZIMon，或用 exporter 转成 Prometheus 格式
+
+第 3 层：业务层
+  客户端侧的延迟、错误率、队列深度
+```
+
+三层都要有。只看存储服务层，你无法区分"是集群慢"还是"是那台机器的网卡慢"；只看节点层，你看不到 PG 状态和池容量。
+
+```bash
+# Ceph 开启指标暴露
+ceph mgr module enable prometheus
+curl -s http://ceph-node1:9283/metrics | head -20
+
+# 关键指标名
+# ceph_health_status            0=OK 1=WARN 2=ERR
+# ceph_osd_up / ceph_osd_in     OSD 状态
+# ceph_pg_active / ceph_pg_degraded
+# ceph_pool_bytes_used / ceph_pool_max_avail
+# ceph_osd_op_r_latency_sum     读延迟
+# ceph_osd_stat_bytes_used      单 OSD 用量（算水位用）
+```
+
+<Callout type="tip" title="别忘了采 SMART">
+`node_exporter` 需要额外开启 `--collector.textfile` 配合 `smartmon` 脚本，或者部署 `smartctl_exporter`，才能采到盘的寿命和介质错误。
+
+这是**最有预测价值的一类指标**：`Percentage Used`、`Available Spare`、`Media and Data Integrity Errors` 的趋势，能让你在盘彻底坏掉之前几周就发现问题。没有它，你只能等 OSD down 了才知道。
+</Callout>
+
+## 看板设计：先看什么后看什么
+
+大多数团队的 Grafana 看板是"把所有指标都画上去"，结果值班时不知道该看哪一个。有效的看板要按**排查顺序**分层：
+
+```
+第一屏：一眼判断有没有事（只放 5~8 个数字）
+  · 集群健康状态（OK / WARN / ERR）
+  · OSD up/in 数量 vs 总数
+  · PG 非 active+clean 的数量
+  · 最满 OSD 的使用率      ← 不是平均值！
+  · 客户端 IOPS / 带宽
+  · P99 延迟
+
+第二屏：出事了往哪看
+  · 各 OSD 的延迟排名（找慢盘）
+  · 各池的容量与增长趋势
+  · 恢复/回填进度
+  · 网络重传率
+
+第三屏：细节与历史
+  · 单 OSD 的详细指标
+  · 长周期趋势（30/90 天）
+```
+
+<Callout type="warn" title="第一屏放平均值是最常见的设计错误">
+容量水位是**按单个 OSD 判定**的（L3 讲过）。集群平均 70% 时，最满的那块盘可能已经 88% 了。
+
+延迟同理：平均延迟 0.3ms 而 P99 是 800ms 的集群，用户体验是糟糕的。
+
+**第一屏的每个数字都应该是"最坏值"或"分位值"，不是平均值。**
+</Callout>
+
+## 告警规则：不误报也不漏报
+
+告警设计的两个失败模式，都会导致同样的结果——**没人看告警了**：
+
+- 误报太多 → 狼来了，真告警被淹没
+- 漏报 → 出事了没人知道
+
+有效的做法是分级 + 给足上下文：
+
+```yaml
+groups:
+- name: ceph
+  rules:
+  # P1：立即处理，会影响业务
+  - alert: CephHealthError
+    expr: ceph_health_status == 2
+    for: 1m
+    labels: {severity: P1}
+    annotations:
+      summary: "Ceph 集群 HEALTH_ERR"
+      runbook: "https://wiki/runbook/ceph-health-err"
+
+  - alert: CephOSDFull
+    expr: max(ceph_osd_stat_bytes_used / ceph_osd_stat_bytes) > 0.92
+    for: 5m
+    labels: {severity: P1}
+    annotations:
+      summary: "有 OSD 使用率超过 92%，接近 full_ratio"
+
+  # P2：当天处理
+  - alert: CephOSDDown
+    expr: ceph_osd_up == 0
+    for: 10m                      # ← 给自愈留时间，避免重启抖动误报
+    labels: {severity: P2}
+
+  - alert: CephOSDNearFull
+    expr: max(ceph_osd_stat_bytes_used / ceph_osd_stat_bytes) > 0.85
+    for: 30m
+    labels: {severity: P2}
+
+  # P3：本周处理
+  - alert: DiskWearoutHigh
+    expr: smartmon_percentage_used > 80
+    for: 1h
+    labels: {severity: P3}
+    annotations:
+      summary: "盘寿命已用超过 80%，排入采购计划"
+
+  - alert: CephPGNotClean
+    expr: ceph_pg_total - ceph_pg_active_clean > 0
+    for: 1h                       # ← 正常恢复会短暂不 clean，1h 才告警
+    labels: {severity: P3}
+```
+
+<Callout type="tip" title="for 子句是抑制误报的关键">
+`for: 10m` 意味着"持续 10 分钟才告警"。这一个字段能过滤掉绝大多数噪音：
+
+- 重启一台机器时 OSD 短暂 down → 10 分钟内恢复，不告警
+- 加盘后 PG 短暂不 clean → 1 小时内完成回填，不告警
+- 瞬时延迟毛刺 → 不告警
+
+但 P1 级别的 `for` 要短（1~5 分钟），因为它们真的紧急。
+</Callout>
+
+告警必须带的三样东西：
+
+1. **具体对象**：是哪个 OSD、哪个池、哪台机器
+2. **当前值和阈值**：`88% > 85%`，不是"容量告警"
+3. **runbook 链接**：指向处置步骤文档
+
+## 容量趋势与扩容提前量
+
+这是可观测性最有价值的产出：**在还有时间的时候发出提醒**。
+
+```promql
+# 按过去 7 天的增长率，预测多久后达到 85%
+predict_linear(ceph_pool_bytes_used[7d], 30 * 24 * 3600)
+  / ceph_pool_max_avail > 0.85
+```
+
+```yaml
+- alert: CephPoolWillBeFullIn30Days
+  expr: |
+    predict_linear(ceph_pool_bytes_used[7d], 30 * 24 * 3600)
+      / (ceph_pool_bytes_used + ceph_pool_max_avail) > 0.85
+  for: 6h
+  labels: {severity: P3}
+  annotations:
+    summary: "池 {{ $labels.name }} 预计 30 天内达到 85% 水位，请启动扩容评估"
+```
+
+<Callout type="warn" title="提前量要覆盖采购周期">
+水位到 85% 才告警，留给你的时间通常不够走完流程：
+
+```
+采购审批  2~4 周
+到货      2~6 周（进口设备可能更久）
+上架布线  1 周
+扩容实施  1 周
+─────────────────
+合计      1.5~3 个月
+```
+
+所以趋势预警的窗口应该设成 **90 天**，而不是 30 天。这件事的价值在于：它把"紧急救火"变成了"常规计划"。
+</Callout>
+
+## GPFS 侧的对应做法
+
+```bash
+# GPFS 自带的性能监控
+mmperfmon query gpfsNSDDiskWaitTime
+mmperfmon query cpu,memory,network
+
+# 健康状态（可以脚本化后转成指标）
+mmhealth cluster show -Y
+mmhealth node show --verbose
+
+# 容量
+mmdf fs1
+mmrepquota -j fs1        # 各 fileset 的配额使用率
+```
+
+关键指标：文件系统使用率、各 fileset 配额使用率、NSD 等待时间、quorum 节点状态、CES 节点状态、GUI 服务状态（CSI 依赖它）。
+
+<Quiz
+  id="obs-1"
+  question="Grafana 第一屏该放集群平均使用率还是最满 OSD 的使用率？为什么？"
+  options={[
+    { text: '平均使用率，更能代表整体情况', feedback: '平均值会掩盖单盘接近 full 的危险。' },
+    { text: '最满 OSD 的使用率，因为水位是按单个 OSD 判定的', correct: true },
+    { text: '两个都不放，看池的使用率就行', feedback: '池的 MAX AVAIL 本身也是由最满的 OSD 决定的，但直接看最满 OSD 更直观。' },
+    { text: '无所谓，都差不多', feedback: 'PG 分布标准差通常 5%~10%，差别足以决定是否触发 full。' },
+  ]}
+  explain={<>
+    集群平均 70% 时最满的盘可能已到 88%。full_ratio 是按单 OSD 判定的，一旦触发相关池立刻拒绝写入。
+    同样的道理适用于延迟：第一屏要放 P99，不是平均。
+  </>}
+/>
+
+<Quiz
+  id="obs-2"
+  question="OSD down 的告警应该配多长的 for 子句？"
+  options={[
+    { text: 'for: 0，立刻告警', feedback: '任何一次计划内重启都会触发告警，很快就没人看了。' },
+    { text: 'for: 10m 左右，给正常重启和自愈留出时间', correct: true },
+    { text: 'for: 24h，避免打扰', feedback: '真坏盘时集群会长时间处于降级状态而无人知晓。' },
+    { text: '不需要告警，看看板就行', feedback: '没人会 7×24 盯看板。' },
+  ]}
+  explain={<>
+    for 子句是抑制误报最有效的手段。P2/P3 级别可以给 10 分钟到 1 小时，
+    但 P1（如接近 full_ratio）要短，因为它们真的紧急。
+  </>}
+/>
+
+<Quiz
+  id="obs-3"
+  question="关于容量趋势预警，下面哪些说法正确？（多选）"
+  options={[
+    { text: '预警窗口应该覆盖完整的采购到上线周期', correct: true },
+    { text: '90 天比 30 天更合适，因为采购加到货可能就要两个月', correct: true },
+    { text: '它的价值在于把紧急救火变成常规计划', correct: true },
+    { text: '有了趋势预警就不需要 nearfull 告警了', feedback: '趋势预警可能因为增长模式突变而失准，nearfull 是兜底。' },
+  ]}
+  explain={<>趋势预警和阈值告警是互补的：前者给你时间做计划，后者在预测失准时兜底。两个都要有。</>}
+/>
+
+## 这节课的落点
+
+- 三层指标都要采：节点层、存储服务层、业务层
+- SMART 是最有预测价值的指标，必须单独配采集
+- 看板按排查顺序分层，第一屏只放最坏值和分位值，不放平均值
+- 告警分级 + `for` 子句抑制误报 + 带具体对象、当前值、runbook 链接
+- 容量趋势预警窗口设 90 天，覆盖采购周期；同时保留阈值告警兜底
+- GPFS 侧对应关注：文件系统与 fileset 配额、NSD 等待时间、quorum、CES、GUI

@@ -1,0 +1,238 @@
+## 集群跑起来只是开始
+
+部署一次，运维两年。这一节讲的是那两年里你真正要天天做的事：加盘、换盘、扩容、升级、处理告警。
+
+所有 Day-2 操作的共同点：**它们都会触发数据迁移**。而数据迁移会和业务抢 I/O。所以每一条命令背后，都要先回答两个问题：迁多少？迁多快？
+
+## 扩容：加节点与加盘
+
+```bash
+# 加节点前：先确认网络连通性
+# 新节点必须能和现有客户端、现有集群节点互通
+ceph fs get prod | tail -1                     # 拿到 mds 服务名
+ceph tell mds.<name> client ls | grep -oP '\d{1,3}(\.\d{1,3}){3}' | sort -u
+# 从新节点 ping 上面每一个客户端 IP，以及所有现有集群节点
+
+# 加节点
+ceph orch host add ceph-node4
+ceph orch daemon add osd ceph-node4:/dev/nvme1n1
+```
+
+<Callout type="trap" title="加节点最容易漏的一步是网络验证">
+新节点和集群内部通了，不代表和**客户端**通了。客户端要直连 OSD 读写数据（还记得吗，Ceph 没有代理层）。新节点上的 OSD 一旦承载了 PG，那些连不通它的客户端就会卡住。
+
+所以扩容前一定要把现有客户端 IP 列表拉出来，从新节点逐个 ping 一遍。这一步在实际项目的运维文档里被专门强调过——因为它出过事。
+</Callout>
+
+加盘后数据会自动回填。控制回填速度：
+
+```bash
+# 查看当前恢复限速参数
+ceph config get osd osd_max_backfills          # 每个 OSD 同时进行的回填数，默认 1
+ceph config get osd osd_recovery_max_active    # 同时恢复的对象数
+ceph config get osd osd_recovery_sleep         # 每次恢复操作之间的休眠，越大越慢
+
+# 业务高峰期：调慢
+ceph config set osd osd_max_backfills 1
+ceph config set osd osd_recovery_sleep 0.1
+
+# 业务低峰期：调快
+ceph config set osd osd_max_backfills 4
+ceph config set osd osd_recovery_sleep 0
+```
+
+## 缩容：优雅下线一块盘
+
+顺序很重要，做反了会造成不必要的两次数据迁移。
+
+```bash
+# 1. 先 reweight 到 0，让数据逐步迁走（比直接 out 更平缓）
+ceph osd reweight 14 0
+
+# 等待数据迁移完成
+watch ceph -s
+
+# 2. 标记 out，从数据分布中移除
+ceph osd out 14
+
+# 3. 停止守护进程
+ceph orch daemon stop osd.14
+
+# 4. 从集群彻底移除
+ceph osd purge 14 --yes-i-really-mean-it
+```
+
+<Callout type="warn" title="换盘前必须先算容量">
+`out` 会立刻触发这块盘上所有数据的重新分布。如果集群水位已经很高（比如有 OSD 到了 85% nearfull），迁移可能把某个 OSD 顶到 `backfillfull` 甚至 `full`，导致**整个池拒绝写入**。
+
+换盘前的检查清单：
+
+```bash
+ceph df                       # 集群整体余量
+ceph osd df | sort -k17 -rn   # 按使用率排序，看最满的那块盘
+ceph osd df tree              # 按主机看分布是否均匀
+```
+
+确认最满的 OSD 吸收这部分迁移后仍在安全线内，再动手。
+</Callout>
+
+## 坏盘更换标准流程
+
+```bash
+# 1. 确认根因（Ceph 层 + 硬件层双重证据）
+ceph health detail
+ssh <host> dmesg -T | tail -30
+ssh <host> smartctl -a /dev/sdd
+
+# 2. 算容量（见上）
+ceph df && ceph osd df | sort -k17 -rn | head
+
+# 3. 下线
+ceph osd out 14
+# 等迁移完成，PG 回到 active+clean
+ceph osd purge 14 --yes-i-really-mean-it
+
+# 4. 物理换盘，记录序列号与槽位
+
+# 5. 重新加入
+ceph orch device zap <host> /dev/sdd --force
+ceph orch daemon add osd <host>:/dev/sdd
+
+# 6. 验证
+ceph osd tree
+ceph -s
+```
+
+## 运维开关：什么时候该用
+
+| 开关 | 作用 | 典型场景 |
+| --- | --- | --- |
+| `noout` | OSD 掉线也不标记为 out | **重启单台机器**，避免不必要的数据迁移 |
+| `norebalance` | 不做再平衡 | 批量加盘时先加完再一起平衡 |
+| `nobackfill` / `norecover` | 暂停回填 / 恢复 | 业务高峰临时刹车 |
+| `noscrub` / `nodeep-scrub` | 暂停清洗 | 排查性能问题时排除干扰 |
+
+```bash
+# 重启一台机器的标准姿势
+ceph osd set noout
+systemctl reboot                 # 在目标机器上
+# 机器起来、OSD 全部 up 之后
+ceph osd unset noout
+```
+
+<Callout type="trap" title="设了 noout 一定要记得取消">
+`noout` 忘了取消，是运维事故排行榜上的常客。后果是：真的有盘坏了，集群也不会自动把它踢出去做恢复，数据长期处于降级状态而没人发现——直到第二块盘也坏了。
+
+`ceph -s` 会在 health 里明确提示 `noout flag(s) set`。**看到这行提示不要习以为常**，要确认它是谁、什么时候、为什么设的。
+</Callout>
+
+## 滚动升级
+
+```bash
+# 查看当前版本分布
+ceph versions
+
+# 检查目标版本是否可升级
+ceph orch upgrade check --ceph-version 20.2.2
+
+# 开始升级（cephadm 会按 mgr → mon → osd → mds → rgw 的顺序滚动）
+ceph orch upgrade start --ceph-version 20.2.2
+
+# 观察进度
+ceph orch upgrade status
+ceph -W cephadm                  # 实时看 cephadm 的事件
+
+# 出问题时暂停
+ceph orch upgrade pause
+ceph orch upgrade resume
+ceph orch upgrade stop
+```
+
+升级纪律：
+
+- **升级前**：集群必须 `HEALTH_OK`，PG 全部 `active+clean`。带病升级是自找麻烦
+- **升级中**：不要同时做其它变更（加盘、改 crush rule）
+- **跨大版本**：先读官方 release notes 里的 upgrade 章节，确认是否需要中间版本过渡
+
+## 容量水位管理
+
+```bash
+# 查看三条水位线
+ceph osd dump | grep -E 'full_ratio|nearfull'
+
+# 临时调整（应急用，不是常规手段）
+ceph osd set-nearfull-ratio 0.87
+ceph osd set-backfillfull-ratio 0.92
+ceph osd set-full-ratio 0.96
+```
+
+日常真正该做的是**让分布更均匀**，而不是抬高水位线：
+
+```bash
+# 开启 balancer（默认开）
+ceph balancer status
+ceph balancer mode upmap
+ceph balancer on
+
+# 看 PG 分布的标准差
+ceph osd df | tail -3
+# MIN/MAX VAR: 0.82/1.18  STDDEV: 4.21     ← STDDEV 越小越好
+```
+
+<Callout type="tip" title="容量告警要提前两周">
+水位到 85% 才告警，留给你的时间通常不够走完采购流程。实际做法是做**趋势预测**：按过去 30 天的增长率外推，在"预计 60 天后达到 80%"时就发出扩容提醒。
+
+这件事在 L4 的可观测性一节里会具体做。
+</Callout>
+
+<Quiz
+  id="day2-1"
+  question="要重启一台存储节点做内核升级，正确的操作顺序是？"
+  options={[
+    { text: '直接重启，Ceph 会自己处理', feedback: '默认 10 分钟后 OSD 会被标记 out，触发不必要的全量数据迁移。' },
+    { text: 'ceph osd set noout → 重启 → 确认 OSD 全部 up → ceph osd unset noout', correct: true },
+    { text: '先把该节点所有 OSD purge 掉，重启后重新加回', feedback: '这会触发两次全量数据迁移，代价极大。' },
+    { text: '把 min_size 改成 1 再重启', feedback: '毫无必要，而且引入丢数据风险。' },
+  ]}
+  explain={<>
+    noout 告诉集群"这些 OSD 只是暂时不在，别急着重新分布数据"。
+    重启是计划内的短暂离线，不需要迁移几十 TB 数据。用完记得 unset。
+  </>}
+/>
+
+<Quiz
+  id="day2-2"
+  question="集群有 OSD 已达 88% 使用率，此时一块盘坏了。下一步最合理的是？"
+  options={[
+    { text: '立刻 ceph osd out，越快恢复冗余越好', feedback: '迁移会推高其它 OSD，很可能把 88% 那块顶到 full 导致整池拒写。' },
+    { text: '先评估容量余量和迁移影响，必要时限速，再执行 out', correct: true },
+    { text: '把 full_ratio 调到 0.99 争取空间', feedback: '这是最后的应急手段，不是第一步；而且极度危险。' },
+    { text: '什么都不做，等它自己恢复', feedback: '降级状态长期存在同样是风险。' },
+  ]}
+  explain={<>
+    这正是上一关闯关里强调的：换盘的风险不在换盘本身，而在它触发的迁移。
+    先 ceph df / ceph osd df 算账，必要时调低 osd_max_backfills 限速，再动手。
+  </>}
+/>
+
+<Quiz
+  id="day2-3"
+  question="ceph -s 显示 health: HEALTH_WARN 且有 noout flag(s) set。该怎么处理？"
+  options={[
+    { text: '这是正常的，忽略即可', feedback: '这个标志会掩盖真实的 OSD 故障，绝不能习以为常。' },
+    { text: '查清是谁在什么时候为什么设的，确认操作已完成后取消', correct: true },
+    { text: '直接 unset，反正是别人设的', feedback: '如果对方正在维护中途，贸然取消会触发意外迁移。' },
+    { text: '把它写进告警屏蔽规则', feedback: '屏蔽掉之后，下次真出事就没人知道了。' },
+  ]}
+  explain={<>忘记取消 noout 是常见事故：真坏盘时集群不会自动恢复，数据长期降级无人察觉。变更记录和交接文档就是为这类情况准备的。</>}
+/>
+
+## 这节课的落点
+
+- 所有 Day-2 操作都会触发迁移，动手前先回答"迁多少、迁多快"
+- 加节点前务必验证与**现有客户端**的网络连通性
+- 下线顺序：reweight 0 → out → stop → purge
+- 换盘前必须先算容量，避免迁移把集群顶到 full
+- 计划内重启用 `noout`，用完立刻取消
+- 升级前集群必须 HEALTH_OK，升级中不夹带其它变更
+- 抬高水位线是应急，让分布均匀（balancer）才是常规手段

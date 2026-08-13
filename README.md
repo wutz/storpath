@@ -1,6 +1,6 @@
 # Storpath
 
-面向应届毕业生的**分布式存储运维工程师**在线交互式学习项目。
+**分布式存储运维工程师**的在线交互式学习项目。
 
 从 Linux 系统基础出发，吃透 Ceph 的块 / 文件 / 对象三种存储，学会把业务需求翻译成机器配置，
 再走向 GPFS ECE、K8s CSI 与商业存储的进阶战场。
@@ -15,14 +15,18 @@
 | **L3** | 容量与性能规划 | 需求拆解、容量推算、性能估算、方案对比 |
 | **L4** | 进阶方向 | GPFS/ECE、K8s 存储与 CSI、商业存储、可观测性、值班手册 |
 
-共 5 个阶段 33 节课，其中动手环节 15 个（12 个实验 + 1 个命令行闯关 + 2 个规划计算器）。
+共 5 个阶段 **33 节课，全部已完成正文**，其中动手环节 15 个（12 个实验 + 1 个命令行闯关 + 2 个规划计算器），
+另有 2 个嵌在课程中的终端演练（Ceph 故障排查、PVC Pending 排查）。
+
+线上地址：<https://storpath.wutz.dev>
 
 ## 交互形式
 
 - **检查点（Quiz）** —— 随堂单选/多选，选错给针对性反馈，答对写入本地进度
 - **命令行闯关（Terminal）** —— 模拟终端，预置真实的 `ceph -s`、`dmesg`、`smartctl` 输出，
   按目标一步步定位根因；支持 `goals` / `hint` / `help` / 命令历史
-- **规划计算器（Planner）** —— 改参数看结果，把 TB→TiB、冗余开销、水位预留三刀账算明白
+- **规划计算器（Planner）** —— 两个：容量推算（TB→TiB、冗余开销、水位预留三刀账）与
+  带宽估算（分别算盘 / cluster 网 / public 网的上限，自动标出瓶颈资源）
 - **进度追踪** —— 存 localStorage，无账号体系，换设备不同步
 
 ## 技术栈
@@ -42,8 +46,27 @@ bun install
 bun run dev        # http://localhost:3001
 bun run build
 bun run typecheck
-bun run deploy     # 部署到 Cloudflare Workers
+bun run deploy     # 手工部署到 Cloudflare Workers
 ```
+
+## 持续部署
+
+推送到 `main` 自动部署，有两条路，**二选一，不要同时开启**（否则一次推送会部署两遍）：
+
+**方案 A：GitHub Actions** —— 仓库里已有 `.github/workflows/deploy.yml`，
+只需在 Settings → Secrets and variables → Actions 添加两个 secret：
+
+| Secret | 从哪来 |
+| --- | --- |
+| `CLOUDFLARE_API_TOKEN` | Cloudflare Dashboard → My Profile → API Tokens → Create Token，用 "Edit Cloudflare Workers" 模板 |
+| `CLOUDFLARE_ACCOUNT_ID` | Dashboard 右侧栏，或执行 `bunx wrangler whoami` |
+
+**方案 B：Cloudflare Workers Builds** —— 原生方案，无需在 GitHub 里存密钥。
+Dashboard → Compute (Workers) → `storpath` → Settings → Build → Connect，
+授权 GitHub App 并选中 `wutz/storpath`，构建命令填 `bun run build`，部署命令填 `bunx wrangler deploy`。
+选这条请删掉 `.github/workflows/deploy.yml`。
+
+> Workers Builds 的仓库连接依赖 GitHub App 的 OAuth 授权，只能在 Dashboard 上完成，wrangler CLI 没有对应命令。
 
 ## 项目结构
 
@@ -55,19 +78,22 @@ storpath/
 │   │   ├── content.ts          # MDX 正文加载
 │   │   ├── progress.ts         # 学习进度（localStorage）
 │   │   ├── ceph-capacity.ts    # Ceph 容量推算
+│   │   ├── ceph-perf.ts        # Ceph 带宽估算与瓶颈定位
 │   │   └── units.ts            # TB/TiB 换算，口径与 storplan 一致
 │   ├── components/
 │   │   ├── Callout.tsx             # note / tip / warn / trap 四种提示框
 │   │   ├── Quiz.tsx                # 随堂检查点
 │   │   ├── Terminal.tsx            # 命令行闯关模拟器
 │   │   ├── CephCapacityPlanner.tsx # 容量计算器
+│   │   ├── PerfEstimator.tsx       # 带宽估算与瓶颈定位
 │   │   ├── mdx-components.tsx      # MDX 全局组件表
 │   │   └── lesson-context.ts       # 当前课程 key，供交互组件写进度
-│   ├── content/
-│   │   ├── l0-systems/*.mdx
-│   │   ├── l1-fundamentals/*.mdx
-│   │   ├── l2-ceph/*.mdx
-│   │   └── l3-planning/*.mdx
+│   ├── content/                # 33 节课程正文
+│   │   ├── l0-systems/         # 6 节
+│   │   ├── l1-fundamentals/    # 5 节
+│   │   ├── l2-ceph/            # 10 节
+│   │   ├── l3-planning/        # 4 节
+│   │   └── l4-advanced/        # 8 节
 │   ├── routes/
 │   │   ├── __root.tsx
 │   │   ├── index.tsx                    # 首页：路径总览 + 进度
@@ -85,6 +111,9 @@ storpath/
 1. 在 `src/lib/curriculum.ts` 对应阶段里加一条 `Lesson`，写清 `objectives` 和 `outline`
 2. 状态先留 `'planned'` —— 课程页会自动渲染大纲占位，路径图上标记为「大纲」
 3. 正文写好后建 `src/content/<trackId>/<lessonId>.mdx`，把状态改成 `'ready'`
+
+> 注意：MDX 里 JSX 属性值用双引号包裹，属性内部不要再出现半角双引号（用 `「」` 代替），
+> 否则会在构建时报解析错误。
 
 MDX 里可以直接使用交互组件，无需 import：
 
@@ -126,7 +155,10 @@ MDX 里可以直接使用交互组件，无需 import：
 - **容量与性能规划** —— [Storplan](https://storplan.wutz.dev/)
 - **系统基础** —— Brendan Gregg《Systems Performance, 2nd Edition》
 
-## 待办
+## 后续可做
 
-- L0/L1/L2/L3 已有 7 节完整正文，其余 26 节为定稿大纲，逐节补写即可
-- 可考虑补充：CRUSH 映射的可视化推演、PG 状态机动画、更多命令行闯关场景
+- CRUSH 映射的可视化推演（对象 → PG → OSD 的交互式演示）
+- PG 状态机动画
+- 更多命令行闯关场景：MON quorum 丢失、MDS slow request、RGW 5xx
+- GPFS 侧的终端演练（`mm*` 命令排障）
+- 深色模式（Shiki 已按双主题编译，接一个切换即可）

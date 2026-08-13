@@ -1,0 +1,277 @@
+## 这一节要做什么
+
+把后端存储真正接进 K8s，跑通「PVC → Pod → 写数据 → 快照 → 恢复」的完整闭环。分三部分：ceph-csi、gpfs-csi、VolumeSnapshot。
+
+## 一、ceph-csi-rbd
+
+### 1. Ceph 侧准备
+
+```bash
+# 创建专用池
+ceph osd pool create kube
+ceph osd pool application enable kube rbd
+rbd pool init kube
+
+# 创建 CSI 专用用户（注意 pool 名要和 StorageClass 一致）
+ceph auth get-or-create client.kubernetes \
+  mon 'profile rbd' \
+  osd 'profile rbd pool=kube' \
+  mgr 'profile rbd pool=kube'
+
+# 记下这三样东西
+ceph fsid                    # clusterID
+ceph mon dump                # monitors 地址
+ceph auth get-key client.kubernetes   # userKey
+```
+
+### 2. K8s 侧配置
+
+```yaml
+# ConfigMap：告诉 CSI 去连哪个集群
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ceph-csi-config
+data:
+  config.json: |-
+    [{
+      "clusterID": "8d2f1c3a-7b41-4c9e-9f2a-5c6d8e0a1b23",
+      "monitors": ["10.0.20.1:6789", "10.0.20.2:6789", "10.0.20.3:6789"]
+    }]
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: csi-rbd-secret
+stringData:
+  userID: kubernetes
+  userKey: AQBxxxxxxxxxxxxxxxxxxxxxxxxxx==
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: block-ceph
+provisioner: rbd.csi.ceph.com
+parameters:
+  clusterID: 8d2f1c3a-7b41-4c9e-9f2a-5c6d8e0a1b23
+  pool: kube                       # ← 必须与用户 caps 里的池一致
+  imageFeatures: layering
+  csi.fstype: xfs
+  csi.storage.k8s.io/provisioner-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: default
+  csi.storage.k8s.io/controller-expand-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/controller-expand-secret-namespace: default
+  csi.storage.k8s.io/node-stage-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/node-stage-secret-namespace: default
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+volumeBindingMode: Immediate
+```
+
+<Callout type="trap" title="三处 pool 名必须完全一致">
+1. `ceph osd pool create` 创建的池名
+2. `ceph auth` 里 caps 限定的 `pool=`
+3. StorageClass 的 `parameters.pool`
+
+任何一处不一致，结果就是上一节演练里那个 `Permission denied`。接入时把这三处抄在一起对照一遍，能省掉一次排障。
+</Callout>
+
+### 3. CephFS 的差别
+
+```yaml
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: shared-ceph
+provisioner: cephfs.csi.ceph.com     # ← 驱动不同
+parameters:
+  clusterID: 8d2f1c3a-7b41-4c9e-9f2a-5c6d8e0a1b23
+  fsName: prod                       # ← 文件系统名，RBD 没有这项
+  pool: cephfs.prod.data
+  csi.storage.k8s.io/provisioner-secret-name: csi-cephfs-secret
+  csi.storage.k8s.io/provisioner-secret-namespace: default
+reclaimPolicy: Retain
+allowVolumeExpansion: true
+```
+
+CephFS 的用户权限也不一样：
+
+```bash
+ceph fs authorize prod client.kubernetes-cephfs / rw
+```
+
+用这个 SC 创建的 PVC 支持 `ReadWriteMany`。
+
+## 二、gpfs-csi
+
+GPFS CSI 的架构和 ceph-csi 有个关键差别：**它通过 GPFS GUI 的 REST API 来操作存储**，而不是直连存储协议。所以前置条件多一项：
+
+```
+前置条件：
+1. GPFS 存储集群已部署
+2. GPFS GUI 服务已部署（CSI 依赖它的 REST API）
+3. 所有 K8s 节点已挂载 GPFS 文件系统（例如 /mnt/gpfs1）
+```
+
+部署方式有两种，选择会影响后续复杂度：
+
+| 方式 | 要求 | 特点 |
+| --- | --- | --- |
+| **所有客户端加入服务端集群** | 客户端节点加入存储集群、hosts 全一致、客户端与服务端 quorum 节点免密、共用一套 GUI | 简单，适合中小环境 |
+| **服务端与客户端集群分离** | 两个集群各自部署、各自 hosts 一致、客户端有独立 quorum、两侧 quorum 互相免密、各自独立 GUI | 复杂，但隔离性好，是多租户方案的基础 |
+
+<Callout type="note" title="为什么 GPFS CSI 要依赖 GUI">
+GPFS 的管理操作都是 `mm*` 命令，需要在集群节点上以 root 执行。CSI 驱动跑在容器里，不方便直接调这些命令，于是 IBM 让 CSI 走 GUI 提供的 REST API。
+
+这带来两个运维影响：
+
+1. **GUI 挂了 CSI 就不能创建卷**（已挂载的卷不受影响）—— GUI 成了一个需要监控的关键组件
+2. GUI 的权限模型**不能按文件系统维度细分**，这正是上一节多租户方案里"独立文件系统方案用不了原生 GPFS CSI"的原因
+</Callout>
+
+## 三、VolumeSnapshot
+
+快照是跨驱动的通用能力，需要额外部署两个组件。
+
+```bash
+# 1. 部署 CRD 和 snapshot-controller（集群级，一次性）
+kubectl apply -k volumesnapshots/crd/
+kubectl apply -k volumesnapshots/snapshot-controller/
+
+# 2. CSI 驱动的 controller 里要有 csi-snapshotter sidecar
+kubectl -n <ns> get deploy <csi-controller> -o jsonpath='{.spec.template.spec.containers[*].name}'
+```
+
+```yaml
+# 3. VolumeSnapshotClass
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: csi-rbdplugin-snapclass
+driver: rbd.csi.ceph.com
+parameters:
+  clusterID: 8d2f1c3a-7b41-4c9e-9f2a-5c6d8e0a1b23
+  csi.storage.k8s.io/snapshotter-secret-name: csi-rbd-secret
+  csi.storage.k8s.io/snapshotter-secret-namespace: default
+deletionPolicy: Delete
+```
+
+### 端到端验证
+
+这套流程建议亲手跑一遍，它能一次性验证所有环节：
+
+```bash
+# 1. 创建 PVC 并写入数据
+kubectl apply -f pvc.yaml
+kubectl apply -f pod.yaml
+kubectl exec -it test-pod -- sh -c 'echo "hello 2026-08-13" > /data/marker.txt'
+kubectl exec -it test-pod -- cat /data/marker.txt
+
+# 2. 打快照
+cat <<'EOF' | kubectl apply -f -
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: data-snap-1
+spec:
+  volumeSnapshotClassName: csi-rbdplugin-snapclass
+  source:
+    persistentVolumeClaimName: data-pvc
+EOF
+
+kubectl get volumesnapshot
+# READYTOUSE 必须是 true，否则看 snapshot-controller 日志
+
+# 3. 破坏数据
+kubectl exec -it test-pod -- sh -c 'echo "corrupted" > /data/marker.txt'
+
+# 4. 从快照恢复成新 PVC
+cat <<'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: restored-pvc
+spec:
+  storageClassName: block-ceph
+  dataSource:
+    name: data-snap-1
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 20Gi
+EOF
+
+# 5. 挂上新 PVC 验证内容
+kubectl exec -it restore-pod -- cat /data/marker.txt
+# 应该看到 "hello 2026-08-13"
+```
+
+<Callout type="warn" title="快照恢复出来的是新 PVC，不是原地回滚">
+K8s 的 VolumeSnapshot 恢复语义是：**用快照作为数据源创建一个新卷**。原来的 PVC 不受影响。
+
+所以恢复流程通常是：从快照建新 PVC → 修改 Deployment 指向新 PVC → 重启 Pod。这个流程要提前演练并写进 SOP，不要等真出事时才第一次做。
+
+另外提醒和前面几节一致：**快照与源数据在同一套存储上，不能替代异地备份**。
+</Callout>
+
+<Callout type="tip" title="CSI 接入的通用排障顺序">
+不管什么驱动，症状对应的排查位置是固定的：
+
+| 症状 | 看哪里 |
+| --- | --- |
+| PVC Pending | controller 的 `csi-provisioner` sidecar 日志 |
+| Pod 卡在 ContainerCreating | **该 Pod 所在节点**的 node plugin 日志 |
+| 扩容不生效 | `csi-resizer` sidecar 日志 + SC 的 `allowVolumeExpansion` |
+| 快照 READYTOUSE 为 false | `csi-snapshotter` sidecar + snapshot-controller 日志 |
+| 删了 PVC 但后端空间没释放 | `reclaimPolicy` 是不是 Retain（那就是预期行为） |
+</Callout>
+
+<Quiz
+  id="csi-1"
+  question="部署 gpfs-csi 前，除了 GPFS 存储集群本身，还必须准备什么？"
+  options={[
+    { text: 'GPFS GUI 服务，以及所有 K8s 节点已挂载 GPFS 文件系统', correct: true },
+    { text: '一套独立的 Ceph 集群', feedback: '两者无关。' },
+    { text: '把所有 K8s 节点改成 RHEL', feedback: '客户端节点的 OS 要求不像 ECE 存储节点那么严格。' },
+    { text: '什么都不用，CSI 会自动搭建', feedback: 'CSI 只是接口层，不会替你部署存储。' },
+  ]}
+  explain={<>GPFS CSI 通过 GUI 的 REST API 操作存储，所以 GUI 是硬依赖且需要纳入监控——GUI 挂了就无法创建新卷。同时节点必须已挂载文件系统。</>}
+/>
+
+<Quiz
+  id="csi-2"
+  question="Pod 一直卡在 ContainerCreating，PVC 已经是 Bound。该看哪里的日志？"
+  options={[
+    { text: 'csi-provisioner 的日志', feedback: 'PVC 已 Bound 说明卷创建成功，provisioner 的工作已完成。' },
+    { text: '该 Pod 所在节点上的 CSI node plugin 日志', correct: true },
+    { text: 'kube-apiserver 日志', feedback: '与挂载无关。' },
+    { text: 'snapshot-controller 日志', feedback: '与快照无关。' },
+  ]}
+  explain={<>
+    记住这条分界线：<strong>创建卷看 controller，挂载卷看 node</strong>。
+    而且要看 Pod 实际调度到的那个节点上的 node plugin，不是随便一个。
+  </>}
+/>
+
+<Quiz
+  id="csi-3"
+  question="关于 K8s 快照恢复，下面哪些说法正确？（多选）"
+  options={[
+    { text: '恢复是「用快照作数据源创建新 PVC」，不是原地回滚', correct: true },
+    { text: '恢复后需要把工作负载切到新 PVC 上', correct: true },
+    { text: '这个流程应该提前演练并写进 SOP', correct: true },
+    { text: '快照可以替代异地备份', feedback: '快照与源数据同在一套存储上，集群级故障会一起丢。' },
+  ]}
+  explain={<>「恢复出新卷 + 切换工作负载」这个语义如果不提前知道，真出事时会手忙脚乱。演练一次的成本远低于事故时摸索的成本。</>}
+/>
+
+## 这节课的落点
+
+- ceph-csi 的三处 pool 名（建池 / caps / StorageClass）必须完全一致
+- CephFS 的 SC 多一项 `fsName`，且支持 RWX
+- GPFS CSI 依赖 GUI 的 REST API，GUI 是需要监控的关键组件
+- 快照需要 CRD + snapshot-controller + csi-snapshotter sidecar 三件套
+- K8s 快照恢复出的是新 PVC，要提前演练切换流程
+- 通用排障分界：创建卷看 controller，挂载卷看对应节点的 node plugin

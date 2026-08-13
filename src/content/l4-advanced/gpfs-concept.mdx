@@ -1,0 +1,196 @@
+## 换一套术语，同一批问题
+
+GPFS（现名 IBM Storage Scale，曾用名 Spectrum Scale）1998 年就有了，是 IBM 的共享磁盘并行集群文件系统。企业级高性能场景里，它的部署量远超你的想象。
+
+学它的最大障碍是**术语体系完全不同**。但底下的问题是同一批：数据怎么切、怎么冗余、元数据谁管、故障时怎么恢复。先建立术语映射，学习速度会快很多。
+
+| GPFS | 大致对应 Ceph 的 | 说明 |
+| --- | --- | --- |
+| NSD | OSD | 网络共享磁盘，数据的物理载体 |
+| failure group | 故障域（host/rack） | 冗余必须跨 failure group |
+| file system | CephFS 的 fs | 一个可挂载的命名空间 |
+| fileset | CephFS 的子目录 + 配额 | 可独立配额和快照的子树 |
+| Recovery Group (RG) | —— | ECE 特有，一组共同做纠删码的服务器 |
+| vdisk | —— | 从 RG 的 declustered array 上切出的逻辑盘 |
+| quorum node | MON | 维持集群一致性，奇数个 |
+| Cluster Manager | 类似 MON leader | 管理租约、故障与恢复，一个集群一个 |
+| File System Manager | 类似 MDS + MGR | 每个文件系统一个，管配置、空间分配、配额 |
+| Token Manager | 类似 MDS 的 cap 机制 | 通过令牌协调对共享文件的并发访问 |
+| CES | RGW / NFS-Ganesha | 集群导出服务，对外提供 NFS/SMB/S3/HDFS |
+
+<Callout type="note" title="最大的架构差异：GPFS 没有独立的元数据服务">
+CephFS 用 MDS 集中处理元数据，MDS 的内存就是元数据缓存的上限。
+
+GPFS 把元数据分布到**所有节点**，用分布式令牌（token）机制协调并发访问。这带来了两个直接结果：
+
+- 元数据能力随节点数扩展，不受单机内存约束 → **这就是它在海量小文件场景强于 CephFS 的根本原因**
+- 代价是每个客户端都要参与集群协议，必须安装 GPFS 客户端软件（不像 NFS 那样零依赖）
+</Callout>
+
+## SNC 模式与 ECE
+
+GPFS 有多种部署形态，当前高性能场景主流是 **SNC（Shared Nothing Cluster）**：每台服务器有自己的本地盘，靠软件做跨节点冗余。
+
+**ECE（Erasure Code Edition）** 就是这条路线的产品化：以纯软件形式提供 IBM Storage Scale RAID，在通用 x86 服务器上做纠删码。
+
+关键规则（来自官方硬件要求，规划时的硬约束）：
+
+```
+· 每台服务器至少 16 个 CPU 核心
+· 每节点最多 64 个驱动器时，需要 64GB 或更多内存
+· 每个 recovery group 支持 3 ~ 32 个节点
+· 一个集群最多 256 个 ECE 存储节点
+· 每台服务器需要一个独立系统盘，RAID1 保护，≥ 100GB
+· 每台服务器至少一块 SSD/NVMe 用于 ECE 日志
+· 存储节点之间 25 Gbps 或更高
+· 存储服务器必须是 RHEL / RockyLinux 8 或 9
+· 所有由 ECE 管理的驱动器必须禁用易失性写缓存
+```
+
+最后一条和 L1 讲的 PLP 是同一件事：**不能让盘在数据真正落盘前就返回成功**。
+
+<Callout type="warn" title="同一个 RG 内的节点配置必须完全一致">
+官方要求：恢复组中的所有存储服务器必须具有**匹配的配置**——相同的 CPU、内存、网络和存储设备配置。
+
+这不是建议，是硬性要求。它对采购的影响很直接：**扩容时必须买到和原来一模一样的机型**，否则只能新建一个 RG。所以规划阶段就要确认机型的可采购周期。
+</Callout>
+
+## ECE 支持的纠删码
+
+```
+16+2P、16+3P、8+2P、8+3P、4+2P、4+3P
+3WayReplication、4WayReplication
+```
+
+官方按节点数给出的推荐，和 L1 学的 EC 规律完全吻合——**节点越少，只能选冗余度更高、效率更低的方案**：
+
+| 节点数 | 推荐方案 |
+| --- | --- |
+| 3 | 3WayReplication |
+| 4 ~ 5 | 4+3P / 3WayReplication |
+| 6 ~ 9 | 8+3P / 4+2P / 4+3P |
+| 10+ | 8+2P / 8+3P / 4+2P / 4+3P |
+
+## quorum：规则更细，原理相同
+
+单个恢复组时的官方规则：
+
+```
+scale-out 节点数 = 4      → quorum 节点数 3
+scale-out 节点数 = 5 或 6 → quorum 节点数 5
+scale-out 节点数 ≥ 7      → quorum 节点数 7
+```
+
+多个 RG 时，7 个 quorum 节点会以轮询方式分布到各 RG；RG 超过 7 个时，选 7 个 RG 作为 quorum 持有者。
+
+失去 quorum 的后果比 Ceph 更剧烈：**GPFS 会卸载整个集群上的文件系统**，直到 quorum 重建，然后执行文件系统恢复。所以 quorum 节点的稳定性是 GPFS 运维的头号关注点。
+
+## 多集群：owning 与 accessing
+
+这是 GPFS 一个非常实用的特性，也是它在 HPC 环境广泛使用的原因。
+
+```
+owning cluster（拥有集群）
+  └─ 真正持有存储，提供文件系统
+       ↑
+       │ 远程挂载
+       │
+accessing cluster（访问集群）
+  └─ 不拥有存储，挂载远端集群的文件系统
+```
+
+特点：
+
+- 每个集群独立管理，有自己的 quorum 节点和 GUI 服务
+- 用 `mmauth` 动态授权或撤销远程集群对**特定 fileset** 的访问权限
+- 配额和快照只对被授权的 fileset 可见
+- **root fileset 的内容对所有客户端集群始终可见** —— 这是一个容易被忽略的安全边界
+
+<Callout type="trap" title="root fileset 始终可见的含义">
+做多租户隔离时，如果把数据放在 root fileset 里，所有访问集群都能看到。必须为每个租户创建**独立的 fileset**，并通过 `mmauth` 精确授权。
+
+同时给 root fileset 设置 QoS 限制，防止用户误用或滥用——这是官方文档里明确给出的缓解手段。
+</Callout>
+
+## 常用命令速查
+
+GPFS 的命令全部以 `mm` 开头（multi-media 的历史遗留）：
+
+```bash
+# 集群与节点
+mmlscluster                  # 集群配置、节点角色
+mmgetstate -a                # 所有节点的 GPFS 守护进程状态
+mmlsmgr                      # 各文件系统的 File Manager
+mmlsmgr -c                   # Cluster Manager 是谁
+
+# 磁盘与文件系统
+mmlsnsd                      # NSD 列表
+mmlsdisk fs1                 # 某文件系统的磁盘及其 failure group
+mmlsfs fs1                   # 文件系统参数
+mmdf fs1                     # 容量使用（相当于 df）
+
+# 配置与诊断
+mmlsconfig                   # 集群配置参数
+mmdiag --config              # 当前生效值（可能与配置不同）
+mmdiag --tokenmgr            # 令牌管理器状态
+mmhealth node show           # 健康状态
+mmhealth cluster show
+
+# 启停（改配置参数后需要重启守护进程）
+mmshutdown -a && mmstartup -a
+```
+
+<Callout type="tip" title="mmlsconfig 与 mmdiag --config 的区别">
+`mmlsconfig` 显示的是**配置里写了什么**，`mmdiag --config` 显示的是**当前进程实际生效的值**。
+
+很多参数改完需要重启守护进程才生效。排查"为什么改了没效果"时，先用 `mmdiag --config` 确认生效值——这个习惯能省很多时间。
+</Callout>
+
+<Quiz
+  id="gpfsc-1"
+  question="为什么 GPFS 在海量小文件场景通常优于 CephFS？"
+  options={[
+    { text: 'GPFS 的磁盘速度更快', feedback: '用的是同样的硬件。' },
+    { text: 'GPFS 把元数据分布到所有节点，不受单机内存约束', correct: true },
+    { text: 'GPFS 不需要网络', feedback: '它同样是分布式系统，依赖高速网络。' },
+    { text: 'GPFS 用了纠删码', feedback: 'EC 与元数据能力无关，而且 EC 对小 I/O 是不利的。' },
+  ]}
+  explain={<>
+    CephFS 的元数据能力上限受单个 MDS 的内存约束，缓存不足时性能断崖下跌。
+    GPFS 用分布式令牌机制把元数据分散到所有节点，能随规模扩展。代价是每个客户端都必须安装 GPFS 软件。
+  </>}
+/>
+
+<Quiz
+  id="gpfsc-2"
+  question="一套 ECE 集群有 5 个存储节点，按官方推荐应该选哪种冗余方案？"
+  options={[
+    { text: '8+2P，效率最高', feedback: '8+2P 需要 10 个以上节点。' },
+    { text: '4+3P 或 3WayReplication', correct: true },
+    { text: '16+3P', feedback: '需要更多节点。' },
+    { text: '任意方案都可以', feedback: '节点数直接限制了可选方案。' },
+  ]}
+  explain={<>官方推荐：3 节点用 3WayReplication，4~5 节点用 4+3P 或 3WayReplication，6~9 节点可选 8+3P/4+2P/4+3P，10 节点以上才能上 8+2P。规律和 Ceph 的 EC 完全一致。</>}
+/>
+
+<Quiz
+  id="gpfsc-3"
+  question="做 GPFS 多租户隔离时，下面哪些做法是必要的？（多选）"
+  options={[
+    { text: '为每个租户创建独立的 fileset，不要把数据放在 root fileset', correct: true },
+    { text: '用 mmauth 精确授权每个访问集群可见哪些 fileset', correct: true },
+    { text: '给 root fileset 设置 QoS 限制，防止误用滥用', correct: true },
+    { text: '所有租户共用 root fileset，靠目录权限隔离', feedback: 'root fileset 对所有访问集群始终可见，这是设计行为，目录权限不构成集群级隔离。' },
+  ]}
+  explain={<>「root fileset 始终可见」是 GPFS 多集群的一个硬性安全边界。隔离必须建立在独立 fileset + mmauth 授权之上。</>}
+/>
+
+## 这节课的落点
+
+- 术语映射建好，学习速度翻倍：NSD≈OSD、failure group≈故障域、fileset≈带配额的子目录
+- GPFS 没有集中式元数据服务，元数据分布在所有节点——这是它在小文件场景强于 CephFS 的根本原因
+- ECE 有硬性硬件要求，且同一 RG 内节点配置必须完全一致（影响扩容采购）
+- EC 方案选择与节点数强相关，规律同 Ceph
+- quorum 用奇数（3/5/7），失去 quorum 会卸载整个集群的文件系统
+- 多集群的 owning / accessing 模型很实用，但 root fileset 始终可见
+- `mmlsconfig` 看配置，`mmdiag --config` 看生效值

@@ -1,0 +1,214 @@
+## 先量再调
+
+没有基线的调优都是玄学。这一节的核心不是给你一堆参数，而是给你一套**能证明调优有效**的方法。
+
+流程只有四步，每一步都不能跳：
+
+```
+1. 建立基线      ← 调优前的数字，没有它后面全是猜
+2. 定位瓶颈      ← 客户端？网络？OSD？盘？
+3. 一次改一个参数 ← 改多个就分不清是哪个起了作用
+4. 复测并记录    ← 记录参数、数字、日期、操作人
+```
+
+## 第 1 步：建立基线
+
+分三层测，每层的数字都要留档。
+
+```bash
+# 第 1 层：裸盘能力（在存储节点上，用空闲盘）
+elbencho -w -b 4M -t 48 --direct -s 100g /dev/nvme{0..11}n1
+elbencho -r -b 4M -t 48 --direct -s 100g /dev/nvme{0..11}n1
+# 同时开 iostat -xm 1 观察，确认没有 PCIe 掉速
+
+# 第 2 层：RADOS 层（绕过 RBD/CephFS，测集群本身）
+rados bench -p rbd 300 write --no-cleanup -t 64
+rados bench -p rbd 300 seq -t 64
+rados bench -p rbd 300 rand -t 64
+rados -p rbd cleanup
+
+# 第 3 层：业务接口层
+# 块：
+rbd bench --io-type write --io-size 4K --io-threads 32 --io-total 100G rbd/bench
+# 文件：
+elbencho -w -b 4M -t 16 --direct -s 100g /mnt/cephfs/bench/file
+# 对象：
+warp put --host=10.0.20.100 --access-key=... --secret-key=... --duration=5m
+```
+
+<Callout type="tip" title="三层对比能直接指出瓶颈在哪">
+- 裸盘快、RADOS 慢 → 瓶颈在 Ceph 软件栈或网络
+- RADOS 快、业务接口慢 → 瓶颈在客户端或该接口层（如 MDS、RGW index）
+- 三层都慢 → 先查硬件和网络
+
+**不做分层基线，就只能靠猜。**
+</Callout>
+
+## 第 2 步：定位瓶颈
+
+按 L0 学的 USE 方法，在压测的同时把四类资源都扫一遍：
+
+```bash
+# 存储节点
+iostat -xz 1          # 盘饱和了吗（看 aqu-sz 和 await）
+mpstat -P ALL 1       # 有没有单核被打满（软中断）
+sar -n DEV 1          # 网络到线速了吗
+sar -n ETCP 1         # 有没有重传
+free -g               # 内存够不够，有没有换页
+
+# Ceph 侧
+ceph -s               # 当前 IOPS 和带宽
+ceph osd perf         # 每个 OSD 的 commit/apply 延迟，找出慢盘
+ceph daemon osd.0 perf dump | grep -E 'op_latency|op_w_latency'
+```
+
+`ceph osd perf` 特别有用：
+
+```
+osd  commit_latency(ms)  apply_latency(ms)
+  0                   2                  2
+  7                   3                  3
+ 23                  87                 87        ← 这块盘明显是拖后腿的
+```
+
+**一块慢盘会拖慢所有以它为 primary 的 PG**。找出来之后，看是硬件问题（SMART、PCIe 降速）还是分布问题（PG 太多）。
+
+## 第 3 步：可调的参数
+
+### 客户端侧（收益往往最大）
+
+很多"存储慢"其实是客户端并发不够。单线程、队列深度 1 的负载，无论后端多强都跑不快。
+
+```bash
+# 验证：把 fio 的 numjobs 和 iodepth 加大，看总吞吐是否线性上升
+# 如果上升，说明后端还有余量，问题在客户端并发
+```
+
+### OSD 侧
+
+```bash
+# 内存目标：按节点内存反推（详见 L0 CPU/内存一节）
+ceph config set osd osd_memory_target 6442450944
+
+# 大内存节点的 RocksDB 调优：控制 OSD 底层 RocksDB 的内存占用
+# 2GB = max_write_buffer_number(8) × write_buffer_size(256MB)
+ceph config set osd bluestore_rocksdb_options \
+  compression=kLZ4Compression,max_write_buffer_number=8,min_write_buffer_number_to_merge=2,\
+compaction_style=kCompactionStyleLevel,write_buffer_size=268435456,max_background_jobs=4,\
+level0_file_num_compaction_trigger=8,max_bytes_for_level_base=1073741824,\
+max_bytes_for_level_multiplier=8,compaction_readahead_size=2MB,\
+max_total_wal_size=2147483648,writable_file_max_buffer_size=0,recycle_log_file_num=4
+
+# OSD 处理线程
+ceph config set osd osd_op_num_threads_per_shard 2
+```
+
+<Callout type="note" title="混闪配置：WAL/DB 分离">
+HDD 集群的经典优化是把 BlueStore 的 WAL 和 DB（元数据）放到 NVMe 上，数据留在 HDD：
+
+```bash
+ceph orch daemon add osd host:data_devices=/dev/sdb,db_devices=/dev/nvme0n1
+```
+
+容量规划：DB 分区通常按数据盘容量的 **1% ~ 4%** 配。给少了会发生 DB 溢出（spillover）到 HDD，性能骤降：
+
+```bash
+ceph health detail | grep -i spillover
+```
+
+全闪集群不需要分离——数据盘本身就是 NVMe，分离反而制造热点。
+</Callout>
+
+### 网络侧
+
+前面几节已经覆盖：MTU 9000、public/cluster 分离、检查重传率。这里补一条：
+
+```bash
+# 恢复期间的限速，避免恢复流量吃光带宽
+ceph config set osd osd_max_backfills 1
+ceph config set osd osd_recovery_max_active 3
+ceph config set osd osd_recovery_sleep_ssd 0
+```
+
+### 池侧
+
+```bash
+# PG 数不足会导致分布不均，用 autoscaler 的建议值
+ceph osd pool autoscale-status
+
+# 开启 balancer 让 PG 分布更均匀（直接影响容量利用率和性能一致性）
+ceph balancer mode upmap
+ceph balancer on
+ceph osd df | tail -3       # 看 STDDEV 有没有下降
+```
+
+<Callout type="warn" title="调优的纪律">
+1. **一次只改一个参数**，改完复测。同时改三个，效果好了你也不知道是哪个起作用，效果坏了更难回滚
+2. **记录**：参数名、旧值、新值、改动时间、操作人、复测结果。写进变更记录，不要只留在自己脑子里
+3. **准备回滚**：`ceph config set` 的对应操作是 `ceph config rm`，改之前先把旧值抄下来
+4. **不要抄网上的"优化参数大全"**：那些参数是为特定硬件和负载调的，直接套到你的环境上可能更慢，甚至引发故障
+</Callout>
+
+## 第 4 步：复测与记录
+
+```markdown
+## 变更记录 2026-08-13
+- 参数：osd_memory_target
+- 旧值：4294967296 (4GB) → 新值：6442450944 (6GB)
+- 原因：32 盘节点，256GB 内存，原值导致 OSD 缓存命中率偏低
+- 复测：4K 随机读 IOPS 从 182k → 241k（+32%），P99 延迟 3.2ms → 2.1ms
+- 操作人：xxx
+- 回滚方式：ceph config set osd osd_memory_target 4294967296
+```
+
+<Quiz
+  id="tune-1"
+  question="裸盘压测能跑 5 GB/s，但 rados bench 只有 900 MB/s。下一步该查什么？"
+  options={[
+    { text: '直接换更好的盘', feedback: '盘本身已经证明没问题。' },
+    { text: '查网络（带宽、重传）和 OSD 侧的 CPU / 内存', correct: true },
+    { text: '增加 PG 数量', feedback: '可能有帮助，但不是第一个该查的。' },
+    { text: '把副本数改成 1', feedback: '这是牺牲数据安全换性能，不是调优。' },
+  ]}
+  explain={<>
+    分层基线的价值就在这：裸盘快而 RADOS 慢，说明瓶颈在盘之上的环节——网络、副本复制、OSD 进程的 CPU/内存。
+    先用 sar -n DEV / ETCP 看网络，再用 ceph osd perf 找慢 OSD。
+  </>}
+/>
+
+<Quiz
+  id="tune-2"
+  question="ceph osd perf 显示 osd.23 的 commit latency 是其它 OSD 的 30 倍。最合理的动作是？"
+  options={[
+    { text: '重启 osd.23 试试', feedback: '可能暂时缓解，但没有查明原因。' },
+    { text: '检查这块盘的 SMART、dmesg 和 PCIe 链路状态', correct: true },
+    { text: '把 osd.23 的 reweight 调低就行了', feedback: '这是绕过问题，慢盘仍在集群里，随时可能彻底坏掉。' },
+    { text: '忽略，一块盘不影响整体', feedback: '一块慢盘会拖慢所有以它为 primary 的 PG，影响面很大。' },
+  ]}
+  explain={<>
+    单块 OSD 延迟异常高，先查硬件：SMART 是否有介质错误、dmesg 有无 I/O error、PCIe 是否 downgraded。
+    确认硬件正常再看是不是 PG 分布不均导致它承担了过多负载。
+  </>}
+/>
+
+<Quiz
+  id="tune-3"
+  question="关于调优纪律，下面哪些是对的？（多选）"
+  options={[
+    { text: '一次只改一个参数并复测', correct: true },
+    { text: '改动前记录旧值，准备好回滚命令', correct: true },
+    { text: '不要直接套用网上的参数大全', correct: true },
+    { text: '效果好就不用记录了，反正跑得快', feedback: '不记录的后果是换个人接手就成了黑盒，出问题无法回滚。' },
+  ]}
+  explain={<>调优的产出物不只是更快的集群，还有一份能让别人复现和回滚的记录。没有记录的调优等于给团队埋雷。</>}
+/>
+
+## 这节课的落点
+
+- 四步法：建基线 → 定位瓶颈 → 一次改一个 → 复测记录
+- 三层基线（裸盘 / RADOS / 业务接口）能直接指出瓶颈层次
+- `ceph osd perf` 找慢盘，一块慢盘拖累一大片 PG
+- 客户端并发不足是最常被忽略的"存储慢"原因
+- 混闪才需要 WAL/DB 分离，DB 按 1%~4% 配，注意 spillover 告警
+- balancer 改善分布，同时提升容量利用率和性能一致性
+- 不抄参数大全，不做无记录的调优

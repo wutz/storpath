@@ -1,0 +1,224 @@
+## 场景
+
+凌晨 03:47，你被电话叫醒：
+
+> 所有虚拟机都读写不了了，存储好像整个没了。
+
+你登上 `ceph-node1` 敲 `ceph -s`，**命令卡在那里，什么都不返回**。
+
+这一关和上一关不同：上一关你至少还能用 `ceph` 命令。这一关连管理入口都没了。
+
+<Callout type="warn" title="ceph 命令卡住意味着什么">
+`ceph` 命令的第一步是连 MON 拉取集群 map。它卡住不返回，只有三种可能：
+
+1. **MON 失去 quorum** —— 没有 MON 能给你一个权威答案
+2. **网络不通** —— 连不上任何一个 MON
+3. **本地配置/keyring 问题** —— 连错了地方
+
+先别慌着重启任何东西。**MON 是集群状态的唯一权威，处理不当会让情况变得更糟。**
+</Callout>
+
+<Terminal
+  id="mon-quorum-quest"
+  host="root@ceph-node1"
+  intro={`模拟终端：ceph -s 已经卡住十分钟了。
+注意：这一关里 ceph 系列命令大多不可用，你需要用系统层的工具排查。
+输入 goals 看目标，hint 要提示。`}
+  commands={[
+    {
+      cmd: 'ceph -s',
+      aliases: ['ceph status'],
+      output: `2026-08-14T03:47:12.331+0800 7f2a1c0d2700  0 monclient(hunting): authenticate timed out after 300
+[Errno 110] error connecting to the cluster
+
+# 命令挂了 300 秒后超时。说明连不上任何一个有效的 MON。
+# 此时不要反复重试 ceph 命令，换系统层工具。`,
+    },
+    {
+      cmd: 'systemctl status ceph-mon@ceph-node1',
+      goal: '确认本机 MON 进程的状态',
+      hint: 'ceph 命令用不了，就从 systemd 看守护进程本身。',
+      output: `● ceph-mon@ceph-node1.service - Ceph cluster monitor daemon
+     Loaded: loaded (/usr/lib/systemd/system/ceph-mon@.service; enabled)
+     Active: activating (auto-restart) (Result: exit-code) since Fri 2026-08-14 03:46:58 CST
+    Process: 41233 ExecStart=/usr/bin/ceph-mon -f --cluster ceph --id ceph-node1 (code=exited, status=28)
+
+Aug 14 03:46:58 ceph-node1 ceph-mon[41233]: rocksdb: [db/db_impl/db_impl_write.cc:1736] Flush failed: IO error: No space left on device
+Aug 14 03:46:58 ceph-node1 ceph-mon[41233]: mon.ceph-node1@0(leader) e3 handle_command  error writing to store
+Aug 14 03:46:58 ceph-node1 ceph-mon[41233]: *** Caught signal (Aborted) ***
+Aug 14 03:46:58 ceph-node1 systemd[1]: ceph-mon@ceph-node1.service: Failed with result 'exit-code'.`,
+    },
+    {
+      cmd: 'df -h',
+      goal: '确认 mon_data 所在分区是否写满',
+      hint: '日志里写着 No space left on device。先看看是哪个分区满了。',
+      output: `Filesystem            Size  Used Avail Use% Mounted on
+/dev/mapper/rl-root    50G   12G   38G  25% /
+/dev/nvme0n1p2        480G  480G     0 100% /var/lib/ceph          ← 满了
+tmpfs                 252G     0  252G   0% /dev/shm`,
+    },
+    {
+      cmd: 'du -sh /var/lib/ceph/mon/ceph-ceph-node1/*',
+      goal: '找出把空间吃光的具体目录',
+      hint: 'mon_data 目录里最可能膨胀的是它的 RocksDB。',
+      output: `4.0K    /var/lib/ceph/mon/ceph-ceph-node1/keyring
+468G    /var/lib/ceph/mon/ceph-ceph-node1/store.db
+8.0K    /var/lib/ceph/mon/ceph-ceph-node1/kv_backend
+
+# store.db 是 MON 的 RocksDB，正常应该只有几百 MB 到几 GB。
+# 468G 说明它长期没有被压缩过 —— 通常发生在集群长时间不健康时。`,
+    },
+    {
+      cmd: 'ssh ceph-node2 systemctl status ceph-mon@ceph-node2',
+      goal: '确认其它 MON 是不是也是同样的问题',
+      hint: '三个 MON 通常配置相同、负载相同。一个满了，另外两个呢？',
+      output: `● ceph-mon@ceph-node2.service - Ceph cluster monitor daemon
+     Active: activating (auto-restart) (Result: exit-code) since Fri 2026-08-14 03:44:21 CST
+
+Aug 14 03:44:21 ceph-node2 ceph-mon[38112]: rocksdb: Flush failed: IO error: No space left on device
+Aug 14 03:44:21 ceph-node2 systemd[1]: ceph-mon@ceph-node2.service: Failed with result 'exit-code'.
+
+# ceph-node2 同样是磁盘写满。
+# 三个 MON 挂了两个 → quorum 从 2/3 掉到 1/3 → 集群完全不可用。这解释了全部现象。`,
+    },
+    {
+      cmd: 'ssh ceph-node3 systemctl status ceph-mon@ceph-node3',
+      output: `● ceph-mon@ceph-node3.service - Ceph cluster monitor daemon
+     Active: active (running) since Wed 2026-07-16 09:12:44 CST; 4 weeks 0 days ago
+
+# 第三个 MON 还活着，但它一个人凑不齐 quorum（3 个 MON 需要 2 个）。
+# 只要能救活任意一个，quorum 就恢复了。`,
+    },
+    {
+      cmd: 'ls -la /var/lib/ceph/mon/ceph-ceph-node1/store.db | head -5',
+      output: `total 490733568
+drwxr-xr-x. 2 ceph ceph      12288 Aug 14 03:46 .
+drwxr-xr-x. 3 ceph ceph        108 Jul 16 09:12 ..
+-rw-r--r--. 1 ceph ceph   67108864 Aug 14 03:12 4128821.sst
+-rw-r--r--. 1 ceph ceph   67108864 Aug 14 03:18 4128822.sst
+-rw-r--r--. 1 ceph ceph   67108864 Aug 14 03:24 4128823.sst`,
+    },
+    {
+      cmd: 'journalctl -u ceph-mon@ceph-node1 --since "7 days ago" | grep -i "health\\|compact" | tail -5',
+      output: `Aug 07 11:02:19 ceph-node1 ceph-mon[41233]: mon.ceph-node1 e3 cluster HEALTH_WARN 61 pgs degraded
+Aug 08 00:14:52 ceph-node1 ceph-mon[41233]: mon.ceph-node1 e3 cluster HEALTH_WARN 61 pgs degraded
+Aug 11 09:48:31 ceph-node1 ceph-mon[41233]: mon.ceph-node1 e3 cluster HEALTH_WARN 1 osds down; 61 pgs degraded
+
+# 关键线索：集群已经连续一周处于 HEALTH_WARN。
+# 集群不健康时 MON 不会压缩 store.db（怕丢失恢复所需的历史），于是它一直涨。`,
+    },
+    {
+      cmd: 'ceph tell mon.ceph-node3 compact',
+      output: `Error ENOTSUP: 当前无 quorum，无法通过 ceph 命令下发操作。
+
+# 提醒：没有 quorum 时，几乎所有 ceph 命令都不可用。
+# 必须先在系统层腾出空间、把 MON 拉起来，恢复 quorum 之后才能用 ceph 命令。`,
+    },
+  ]}
+/>
+
+## 复盘
+
+**结论**：`ceph-node1` 与 `ceph-node2` 的 `/var/lib/ceph` 分区被 MON 的 RocksDB（`store.db`）写满，两个 MON 进程反复崩溃退出，3 个 MON 只剩 1 个，quorum（需要 2 个）无法维持，整个集群管理面与数据面均不可用。
+
+**根因链**：
+
+```
+osd.14 坏盘（8 月 11 日）
+  → 集群持续 HEALTH_WARN 且未被处理
+    → MON 在集群不健康时不压缩 store.db（要保留恢复所需的历史 map）
+      → store.db 从几百 MB 涨到 468G
+        → /var/lib/ceph 写满
+          → MON 无法写入，进程崩溃
+            → quorum 丢失，集群完全不可用
+```
+
+**处置顺序**（顺序错了会更糟）：
+
+```bash
+# 1. 先腾出空间：删日志、临时挪走非关键数据，绝不能删 store.db 里的文件
+journalctl --vacuum-size=200M
+# 如有额外分区，把不相关的大文件临时挪走
+
+# 2. 空间腾出后启动一个 MON，恢复 quorum
+systemctl start ceph-mon@ceph-node1
+ceph -s        # 此时应该能返回了
+
+# 3. 有 quorum 之后再压缩 store.db
+ceph tell mon.ceph-node1 compact
+ceph tell mon.ceph-node3 compact
+
+# 4. 把另一个 MON 也拉起来
+systemctl start ceph-mon@ceph-node2
+
+# 5. 最后处理最初的根因 —— 那块坏盘
+ceph health detail
+```
+
+<Callout type="trap" title="三个绝对不能做的操作">
+1. **不要删 `store.db` 里的文件** —— 那是集群状态的唯一副本，删了这个 MON 就废了
+2. **不要用 `mon remove` 删掉挂掉的 MON 试图"凑齐" quorum** —— quorum 的分母会跟着变，可能把情况变得更复杂，且删除操作本身也需要 quorum
+3. **不要同时重装多个 MON** —— 先救活一个恢复 quorum，是所有后续操作的前提
+
+MON 相关的操作里，"少动、按顺序动"永远比"快速尝试"更安全。
+</Callout>
+
+<Callout type="warn" title="这一关真正的教训">
+故障发生在 03:47，但根因是**三天前那块没被处理的坏盘**。
+
+集群长期处于 HEALTH_WARN 会带来一系列连锁反应，MON 的 store.db 不压缩只是其中之一。
+"HEALTH_WARN 又不影响业务，先放着吧"——这个念头是很多重大事故的起点。
+</Callout>
+
+<Quiz
+  id="qmon-1"
+  question="ceph -s 卡住不返回，最不该做的是？"
+  options={[
+    { text: '用 systemctl 查看各节点 MON 进程状态', feedback: '这正是正确的第一步。' },
+    { text: '反复重试 ceph 命令，等它自己好', correct: true },
+    { text: '检查各 MON 节点的磁盘空间', feedback: '合理，mon_data 写满是常见原因。' },
+    { text: '看 MON 的 journald 日志', feedback: '合理，日志会直接给出崩溃原因。' },
+  ]}
+  explain={<>
+    ceph 命令依赖 MON quorum。quorum 没了，再敲一百遍也是超时。
+    此时必须切换到系统层工具：systemctl、journalctl、df、ss。
+  </>}
+/>
+
+<Quiz
+  id="qmon-2"
+  question="MON 的 store.db 涨到几百 GB，最可能的原因是？"
+  options={[
+    { text: '集群长期处于不健康状态，MON 不压缩历史 map', correct: true },
+    { text: '客户端写入量太大', feedback: 'MON 不在数据路径上，客户端数据不经过它。' },
+    { text: 'MON 数量配置太多', feedback: '与数量无关。' },
+    { text: '磁盘故障导致数据重复写入', feedback: '不会产生这种模式。' },
+  ]}
+  explain={<>
+    集群不健康时，MON 需要保留更多历史 map 以支持恢复，因此不做压缩。
+    这就是为什么 HEALTH_WARN 不能长期挂着——它会通过这条隐蔽的路径演变成集群级事故。
+  </>}
+/>
+
+<Quiz
+  id="qmon-3"
+  question="两个 MON 因磁盘满崩溃，第三个正常。正确的处置顺序是？"
+  options={[
+    { text: '先删 store.db 释放空间，再启动 MON', feedback: 'store.db 是集群状态的唯一副本，删了这个 MON 就报废了。' },
+    { text: '先用 mon remove 移除挂掉的两个 MON', feedback: '该操作本身需要 quorum，而且会改变 quorum 分母，让情况更复杂。' },
+    { text: '腾出其它空间 → 启动一个 MON 恢复 quorum → compact → 启动另一个 → 处理坏盘', correct: true },
+    { text: '重装整个集群', feedback: '数据都还在，完全没必要。' },
+  ]}
+  explain={<>
+    关键是「先恢复 quorum」——没有 quorum，几乎所有 ceph 命令（包括 compact）都用不了。
+    腾空间要从日志等无关数据下手，绝不能碰 store.db。
+  </>}
+/>
+
+## 这一关的落点
+
+- `ceph` 命令卡住 = MON quorum 有问题，立刻切换到系统层工具排查
+- MON 在集群不健康时不压缩 store.db，长期 HEALTH_WARN 会把 mon_data 撑爆
+- 恢复顺序：腾空间 → 起一个 MON 恢复 quorum → compact → 起其余 MON → 治根因
+- 绝不能删 `store.db`、绝不能靠 `mon remove` 凑 quorum
+- 给 `/var/lib/ceph` 单独分区并做容量监控，是这类事故的预防手段

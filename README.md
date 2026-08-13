@@ -15,8 +15,8 @@
 | **L3** | 容量与性能规划 | 需求拆解、容量推算、性能估算、方案对比 |
 | **L4** | 进阶方向 | GPFS/ECE、K8s 存储与 CSI、商业存储、可观测性、值班手册 |
 
-共 5 个阶段 **33 节课，全部已完成正文**，其中动手环节 15 个（12 个实验 + 1 个命令行闯关 + 2 个规划计算器），
-另有 2 个嵌在课程中的终端演练（Ceph 故障排查、PVC Pending 排查）。
+共 5 个阶段 **36 节课，全部已完成正文**，其中动手环节 18 个（12 个实验 + 4 个命令行闯关 + 2 个规划计算器），
+另有 1 个嵌在课程中的终端演练（PVC Pending 排查）与 1 个 CRUSH 交互推演。
 
 线上地址：<https://storpath.wutz.dev>
 
@@ -24,7 +24,10 @@
 
 - **检查点（Quiz）** —— 随堂单选/多选，选错给针对性反馈，答对写入本地进度
 - **命令行闯关（Terminal）** —— 模拟终端，预置真实的 `ceph -s`、`dmesg`、`smartctl` 输出，
-  按目标一步步定位根因；支持 `goals` / `hint` / `help` / 命令历史
+  按目标一步步定位根因；支持 `goals` / `hint` / `help` / 命令历史。
+  共 4 关：坏盘导致的 HEALTH_WARN、MON quorum 丢失、CephFS 元数据过载、RGW 5xx 激增
+- **CRUSH 推演（CrushExplorer）** —— 改对象名 / pg_num / 故障域，实时看 object → PG → OSD
+  的完整计算过程；点击 OSD 标记为 down，观察 up 与 acting 分叉、PG 进入 remapped 或 undersized
 - **规划计算器（Planner）** —— 两个：容量推算（TB→TiB、冗余开销、水位预留三刀账）与
   带宽估算（分别算盘 / cluster 网 / public 网的上限，自动标出瓶颈资源）
 - **进度追踪** —— 存 localStorage，无账号体系，换设备不同步
@@ -79,6 +82,7 @@ storpath/
 │   │   ├── progress.ts         # 学习进度（localStorage）
 │   │   ├── ceph-capacity.ts    # Ceph 容量推算
 │   │   ├── ceph-perf.ts        # Ceph 带宽估算与瓶颈定位
+│   │   ├── crush.ts            # CRUSH 映射的教学级模拟（确定性哈希）
 │   │   └── units.ts            # TB/TiB 换算，口径与 storplan 一致
 │   ├── components/
 │   │   ├── Callout.tsx             # note / tip / warn / trap 四种提示框
@@ -86,12 +90,13 @@ storpath/
 │   │   ├── Terminal.tsx            # 命令行闯关模拟器
 │   │   ├── CephCapacityPlanner.tsx # 容量计算器
 │   │   ├── PerfEstimator.tsx       # 带宽估算与瓶颈定位
+│   │   ├── CrushExplorer.tsx       # object → PG → OSD 交互推演
 │   │   ├── mdx-components.tsx      # MDX 全局组件表
 │   │   └── lesson-context.ts       # 当前课程 key，供交互组件写进度
 │   ├── content/                # 33 节课程正文
 │   │   ├── l0-systems/         # 6 节
 │   │   ├── l1-fundamentals/    # 5 节
-│   │   ├── l2-ceph/            # 10 节
+│   │   ├── l2-ceph/            # 13 节
 │   │   ├── l3-planning/        # 4 节
 │   │   └── l4-advanced/        # 8 节
 │   ├── routes/
@@ -157,8 +162,7 @@ MDX 里可以直接使用交互组件，无需 import：
 
 ## 后续可做
 
-- CRUSH 映射的可视化推演（对象 → PG → OSD 的交互式演示）
 - PG 状态机动画
-- 更多命令行闯关场景：MON quorum 丢失、MDS slow request、RGW 5xx
 - GPFS 侧的终端演练（`mm*` 命令排障）
 - 深色模式（Shiki 已按双主题编译，接一个切换即可）
+- 全站搜索

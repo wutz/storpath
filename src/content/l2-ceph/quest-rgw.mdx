@@ -1,0 +1,264 @@
+## 场景
+
+周一上午 10:30，监控告警：
+
+> **[P1] RGW 5xx 错误率 12.4%（阈值 1%），持续 8 分钟**
+
+业务方同步反馈：备份任务大量失败，报 `503 SlowDown`；但另一个组说他们的图片上传一切正常。
+
+你敲 `ceph -s`，返回 **HEALTH_OK**。
+
+<Callout type="tip" title="集群健康但业务报错，说明什么">
+`HEALTH_OK` 只说明 RADOS 层没问题。RGW 是**架在 RADOS 之上的网关**，它自己的瓶颈（index 池热点、bucket 分片、网关并发、LB 配置）不会体现在 `ceph -s` 里。
+
+这类"集群健康但业务报错"的场景，排查重点在**网关层和它依赖的元数据池**，而不是 OSD。
+</Callout>
+
+<Terminal
+  id="rgw-5xx-quest"
+  host="root@ceph-node1"
+  intro={`模拟终端：RGW 5xx 激增，但 ceph -s 显示 HEALTH_OK。
+部分业务正常、部分业务失败 —— 这个差异是重要线索。
+输入 goals 看目标，hint 要提示。`}
+  commands={[
+    {
+      cmd: 'ceph -s',
+      aliases: ['ceph status'],
+      output: `  cluster:
+    health: HEALTH_OK
+
+  services:
+    mon: 3 daemons, quorum ceph-node1,ceph-node2,ceph-node3 (age 8w)
+    osd: 36 osds: 36 up (since 8w), 36 in (since 8w)
+    rgw: 3 daemons active (3 hosts, 1 zones)
+
+  data:
+    pools:   9 pools, 1217 pgs
+    objects: 892.4M objects, 310 TiB
+    pgs:     1217 active+clean
+
+  io:
+    client:   420 MiB/s rd, 88 MiB/s wr, 12.4k op/s rd, 3.1k op/s wr
+
+# 集群完全健康。8.9 亿个对象 —— 这个规模值得留意。`,
+    },
+    {
+      cmd: 'ceph daemon rgw.s3.ceph-node1 perf dump | grep -E "req|failed|qlen"',
+      goal: '确认 RGW 网关侧的错误与积压情况',
+      hint: 'ceph -s 看不到网关层的指标，要直接问 RGW 守护进程。',
+      output: `        "req": 48219334,
+        "failed_req": 5981204,
+        "qlen": 1024,
+        "qactive": 1024,
+
+# qlen = qactive = 1024，队列已经完全打满。
+# 请求排不进去就会返回 503 SlowDown —— 与业务方描述吻合。`,
+    },
+    {
+      cmd: 'radosgw-admin bucket stats --bucket=backup-prod',
+      goal: '定位到出问题的 bucket，看它的对象数与分片数',
+      hint: '备份任务失败而图片上传正常 —— 说明问题可能集中在某个 bucket。',
+      output: `{
+    "bucket": "backup-prod",
+    "num_shards": 11,
+    "usage": {
+        "rgw.main": {
+            "size": 184467440737,
+            "num_objects": 412884213
+        }
+    }
+}
+
+# 4.13 亿个对象，只有 11 个索引分片。
+# 按每片 10 万对象的规划口径，这个 bucket 需要 4000+ 个分片。
+# 平均每个分片承载 3750 万个对象 —— 索引对象大到无法正常读写。`,
+    },
+    {
+      cmd: 'radosgw-admin bucket stats --bucket=images-prod',
+      goal: '对照一个正常的 bucket，验证判断',
+      hint: '另一个组说他们正常。看看那个 bucket 有什么不同。',
+      output: `{
+    "bucket": "images-prod",
+    "num_shards": 128,
+    "usage": {
+        "rgw.main": {
+            "num_objects": 8412903
+        }
+    }
+}
+
+# 841 万对象 / 128 分片 = 每片 6.6 万，在合理范围内。
+# 对照成立：问题确实出在 backup-prod 的分片严重不足。`,
+    },
+    {
+      cmd: 'ceph osd pool ls detail | grep -A1 "buckets.index"',
+      goal: '确认 index 池的冗余方式与所在介质',
+      hint: 'index 池的配置是 RGW 性能的命门，前面课程讲过。',
+      output: `pool 7 'default.rgw.buckets.index' replicated size 3 min_size 2 crush_rule 0
+    pg_num 32 pgp_num 32 application rgw
+
+# crush_rule 0 = 默认 replicated_rule，没有限定 device class。
+# 需要进一步确认它实际落在什么盘上。`,
+    },
+    {
+      cmd: 'ceph osd crush rule dump replicated_rule',
+      goal: '确认默认规则选中的是哪一类设备',
+      hint: '看 rule 里有没有按 device class 做限定。',
+      output: `{
+    "rule_name": "replicated_rule",
+    "steps": [
+        { "op": "take", "item_name": "default" },
+        { "op": "chooseleaf_firstn", "num": 0, "type": "host" },
+        { "op": "emit" }
+    ]
+}
+
+# take default —— 没有限定 device class，
+# 意味着 index 池的 PG 可能落在集群里任何一类盘上，包括 HDD。`,
+    },
+    {
+      cmd: 'ceph osd tree | grep -E "hdd|ssd" | head -8',
+      goal: '确认集群里是否存在混合介质',
+      hint: '如果集群是混闪的，没限定 device class 就是个隐患。',
+      output: `12    hdd   16.37109          osd.12            up   1.00000  1.00000
+13    hdd   16.37109          osd.13            up   1.00000  1.00000
+14    hdd   16.37109          osd.14            up   1.00000  1.00000
+ 0    ssd    7.27739          osd.0             up   1.00000  1.00000
+ 1    ssd    7.27739          osd.1             up   1.00000  1.00000
+
+# 集群是混闪的：既有 HDD 也有 SSD。
+# index 池没有限定 device class → 部分索引 PG 落在了 HDD 上。
+# 大索引对象 + HDD 随机 I/O = 灾难组合。`,
+    },
+    {
+      cmd: 'ceph osd perf | sort -k2 -rn | head -5',
+      output: `osd  commit_latency(ms)  apply_latency(ms)
+ 13                 412                 412
+ 12                 388                 388
+ 14                 341                 341
+  7                   3                   3
+  0                   2                   2
+
+# 三块 HDD 的延迟是 SSD 的一百多倍。
+# 这三块盘正好承载着 backup-prod 的索引分片。`,
+    },
+    {
+      cmd: 'radosgw-admin reshard list',
+      output: `[]
+
+# 当前没有正在进行的 reshard 任务。
+# 说明动态 reshard 要么被关闭，要么因为 bucket 太大而未能触发完成。`,
+    },
+    {
+      cmd: 'ceph config get client.rgw rgw_override_bucket_index_max_shards',
+      output: `11
+
+# 全局默认分片数被设成了 11，且一直没有随业务规模调整。
+# backup-prod 从创建那天起就注定会走到今天这一步。`,
+    },
+  ]}
+/>
+
+## 复盘
+
+**结论**：`backup-prod` bucket 有 4.13 亿个对象但仅 11 个索引分片（平均每片 3750 万对象），且 `buckets.index` 池未限定 device class，部分索引 PG 落在 HDD 上（延迟 400ms 量级）。索引读写成为瓶颈，RGW 请求队列打满（`qlen = qactive = 1024`），新请求被拒绝返回 `503 SlowDown`。
+
+`images-prod` 因分片充足（128 片 / 841 万对象）未受影响——这解释了"部分业务正常"的现象。
+
+**处置分两步**：
+
+```bash
+# ── 救急（分钟级）──
+# 1. 让备份任务降低并发，先把队列压力降下来
+#    （沟通比命令更有效：告诉业务方并发从 64 降到 8）
+
+# 2. 临时扩大 RGW 请求队列与线程数，缓解排队
+ceph config set client.rgw rgw_max_req_queue_len 4096
+ceph config set client.rgw rgw_thread_pool_size 1024
+ceph orch restart rgw.s3
+
+# ── 治本（需要窗口）──
+# 3. 把 index 池限定到 SSD —— 这是最高优先级的一步
+ceph osd crush rule create-replicated ssd-rule default host ssd
+ceph osd pool set default.rgw.buckets.index crush_rule ssd-rule
+
+# 4. 对 backup-prod 重新分片（会阻塞该 bucket 写入，必须选窗口）
+radosgw-admin bucket reshard --bucket=backup-prod --num-shards=4096
+
+# 5. 修正全局默认值，避免新 bucket 重蹈覆辙
+ceph config set client.rgw rgw_override_bucket_index_max_shards 128
+```
+
+<Callout type="warn" title="reshard 4 亿对象的代价必须提前说清">
+对一个 4 亿对象的 bucket 做 reshard，期间**该 bucket 的写入会被阻塞**，耗时可能长达数小时。
+
+执行前必须：
+
+1. 和业务方约定停写窗口，而不是"顺手做一下"
+2. 先确认 index 池已经在 SSD 上（否则 reshard 本身会慢得离谱）
+3. 评估是否更适合拆成多个 bucket —— 单 bucket 4 亿对象本身就是设计问题
+
+**最好的解法是这个 bucket 当初创建时就把分片设够。** 这也是为什么"预计存多少对象"必须在设计阶段就问清楚。
+</Callout>
+
+<Callout type="trap" title="混闪集群里最容易漏的一件事">
+只要集群里有 HDD，**所有元数据类的池都必须显式限定 device class**：
+
+- `*.rgw.buckets.index`
+- `*.rgw.meta`、`*.rgw.log`
+- `cephfs.*.meta`
+- RBD 池的元数据（如果单独分池）
+
+默认的 `replicated_rule` 不限定介质，PG 会随机落到 HDD 上。这个隐患在集群刚建好、数据量小的时候完全看不出来，等到规模上来才集中爆发——正如这一关的场景。
+</Callout>
+
+<Quiz
+  id="qrgw-1"
+  question="ceph -s 显示 HEALTH_OK，但 RGW 大量返回 503。这说明什么？"
+  options={[
+    { text: '监控系统误报', feedback: '业务方的实际报错佐证了告警。' },
+    { text: 'RADOS 层健康，但网关层或它依赖的元数据池存在瓶颈', correct: true },
+    { text: 'OSD 有慢盘但 Ceph 没检测到', feedback: '有可能，但 HEALTH_OK 的直接含义是 RADOS 层无异常；应先从网关层查起。' },
+    { text: '客户端网络故障', feedback: '网络故障不会表现为服务端队列打满。' },
+  ]}
+  explain={<>
+    RGW 是架在 RADOS 之上的网关，它的队列、线程池、index 池热点都不体现在 ceph -s 里。
+    「集群健康但业务报错」时，排查重点在服务层而非 RADOS 层。
+  </>}
+/>
+
+<Quiz
+  id="qrgw-2"
+  question="一个 bucket 有 4 亿对象、11 个索引分片。按规划口径，分片数应该是多少量级？"
+  options={[
+    { text: '大约 100', feedback: '每片会有 400 万对象，仍然远超合理值。' },
+    { text: '大约 4000', correct: true },
+    { text: '11 个就够，分片多了反而慢', feedback: '分片过多确实有 list 开销，但 11 片承载 4 亿对象是数百倍的差距。' },
+    { text: '与对象数无关，看容量', feedback: '索引的压力来自对象数量，不是数据体积。' },
+  ]}
+  explain={<>按每片约 10 万对象估算：4 亿 ÷ 10 万 = 4000 片。建 bucket 时就该按预期规模设置，事后 reshard 要阻塞写入。</>}
+/>
+
+<Quiz
+  id="qrgw-3"
+  question="混闪集群里，下面哪些池必须显式限定 device class 到 SSD？（多选）"
+  options={[
+    { text: 'default.rgw.buckets.index', correct: true },
+    { text: 'cephfs.<fs>.meta', correct: true },
+    { text: 'default.rgw.meta 与 default.rgw.log', correct: true },
+    { text: 'default.rgw.buckets.data', feedback: '数据池是大对象顺序访问，放 HDD 甚至配 EC 都是合理的。' },
+  ]}
+  explain={<>
+    原则一以贯之：<strong>元数据小而随机 → 副本 + SSD；数据大而顺序 → 可以 EC + HDD</strong>。
+    默认的 replicated_rule 不限定介质，混闪集群里必须手工建带 device class 的规则。
+  </>}
+/>
+
+## 这一关的落点
+
+- `ceph -s` 只覆盖 RADOS 层，网关层问题要用 `ceph daemon rgw.<name> perf dump` 看
+- `qlen = qactive` 说明请求队列打满，客户端会收到 503 SlowDown
+- 部分 bucket 正常、部分异常 → 用 `bucket stats` 做对照，快速锁定
+- 索引分片按每片约 10 万对象规划，建 bucket 时设够，事后 reshard 要阻塞写入
+- 混闪集群里所有元数据池都必须显式限定 device class
+- 处置分救急（降并发、扩队列）和治本（换介质、reshard、改默认值）两层

@@ -44,6 +44,17 @@ ceph osd map rbd myobject
 
 这条命令会成为你排障时的常客：**给定一个对象，立刻知道它落在哪几块盘上**。
 
+## 亲手推一遍
+
+下面是一套 3 机架 × 2 主机 × 4 OSD 的演示集群。建议按顺序做这四组实验，比读十遍文字管用：
+
+1. **改对象名的最后一个字符** —— PG 完全变到另一个位置，说明哈希没有局部性
+2. **把故障域从 host 改成 rack** —— 观察三个副本被强制分散到三个机架
+3. **点掉 acting 里的某个 OSD** —— up 与 acting 分叉，PG 进入 `remapped`
+4. **把故障域设成 rack，然后点掉整个 rack 的 8 个 OSD** —— 副本数凑不齐，进入 `undersized+degraded`
+
+<CrushExplorer />
+
 <Callout type="tip" title="up set 与 acting set 的区别">
 - **up set**：按当前 crushmap 计算出的"应该"负责这个 PG 的 OSD
 - **acting set**：当前"实际"在负责的 OSD

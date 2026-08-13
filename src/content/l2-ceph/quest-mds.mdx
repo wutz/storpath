@@ -1,0 +1,243 @@
+## 场景
+
+周四下午 14:20，AI 平台组在群里说：
+
+> CephFS 是不是有问题？我们的训练任务卡在读数据那一步半小时了，`ls` 一个目录要等三十秒。但是同事拷一个大文件又很快。
+
+这句话里藏着最关键的线索：**大文件很快、`ls` 很慢**。上一阶段学过，这两件事走的是完全不同的路径。
+
+<Callout type="tip" title="先做这个区分，能省掉一半排查时间">
+- `ls` / `stat` / `open` / `create` → **元数据路径** → MDS + metadata pool
+- 读写文件内容 → **数据路径** → 客户端直连 OSD + data pool
+
+数据面正常而元数据面慢，说明问题在 MDS 或 metadata pool，不用去看 OSD 的带宽。
+</Callout>
+
+<Terminal
+  id="mds-slow-quest"
+  host="root@ceph-node1"
+  intro={`模拟终端：CephFS 元数据操作变慢，数据读写正常。
+输入 goals 看目标，hint 要提示。`}
+  commands={[
+    {
+      cmd: 'ceph -s',
+      aliases: ['ceph status'],
+      goal: '先确认集群整体状态与告警类型',
+      hint: '任何 Ceph 排查的第一步都一样。',
+      output: `  cluster:
+    id:     8d2f1c3a-7b41-4c9e-9f2a-5c6d8e0a1b23
+    health: HEALTH_WARN
+            1 MDSs report slow requests
+            1 MDSs behind on trimming
+
+  services:
+    mon: 3 daemons, quorum ceph-node1,ceph-node2,ceph-node3 (age 6w)
+    mgr: ceph-node1(active, since 6w), standbys: ceph-node2
+    mds: 1/1 daemons up, 1 standby
+    osd: 36 osds: 36 up (since 6w), 36 in (since 6w)
+
+  data:
+    pools:   5 pools, 673 pgs
+    objects: 41.28M objects, 52 TiB
+    pgs:     673 active+clean
+
+  io:
+    client:   1.8 GiB/s rd, 240 MiB/s wr, 620 op/s rd, 88 op/s wr
+
+# 注意两点：
+#   1. OSD 全部正常，PG 全部 active+clean → 数据面没问题
+#   2. 客户端读带宽 1.8 GiB/s 很健康 → 印证了"大文件很快"`,
+    },
+    {
+      cmd: 'ceph health detail',
+      goal: '展开告警，看清 MDS 到底在抱怨什么',
+      hint: 'HEALTH_WARN 只是标题，展开看具体内容。',
+      output: `HEALTH_WARN 1 MDSs report slow requests; 1 MDSs behind on trimming
+[WRN] MDS_SLOW_REQUEST: 1 MDSs report slow requests
+    mds.prod.ceph-node1.abcdef(mds.0): 47 slow requests are blocked > 30 secs
+[WRN] MDS_TRIM: 1 MDSs behind on trimming
+    mds.prod.ceph-node1.abcdef(mds.0): Behind on trimming (2841/128)
+    max_segments: 128, num_segments: 2841
+
+# slow request 阻塞超过 30 秒，且日志段积压严重（2841 远超上限 128）。
+# 这两个告警通常同时出现：MDS 忙不过来。`,
+    },
+    {
+      cmd: 'ceph fs status prod',
+      goal: '看 MDS 的请求速率与缓存规模',
+      hint: '需要知道 MDS 现在缓存了多少 inode、每秒处理多少请求。',
+      output: `prod - 214 clients
+====
+RANK  STATE           MDS             ACTIVITY       DNS    INOS   DIRS   CAPS
+ 0    active  prod.ceph-node1.abcdef  Reqs: 8942/s  4096k  4096k   214k  8841k
+      POOL             TYPE     USED  AVAIL
+cephfs.prod.meta     metadata   612G  18.2T
+cephfs.prod.data       data     51.0T 18.2T
+STANDBY MDS
+prod.ceph-node2.ghijkl
+
+# 关键数字：
+#   Reqs 8942/s  —— 元数据请求速率极高
+#   DNS/INOS 4096k —— 恰好卡在 4096k（4M），说明缓存已经顶到上限
+#   CAPS 8841k   —— 发放的 cap 数量巨大`,
+    },
+    {
+      cmd: 'ceph config get mds mds_cache_memory_limit',
+      goal: '确认 MDS 缓存上限的配置值',
+      hint: '缓存条目数顶在一个整数上，多半是内存上限卡住了。',
+      output: `4294967296
+
+# 4GB —— 这是默认值。
+# 对于一个有 4100 万对象、214 个客户端的文件系统，这个值远远不够。`,
+    },
+    {
+      cmd: 'ceph tell mds.prod.ceph-node1.abcdef client ls',
+      goal: '找出制造压力的客户端',
+      hint: '214 个客户端里，通常只有少数几个在制造绝大部分负载。看谁持有的 cap 最多。',
+      output: `[
+    { "id": 4128821, "addr": "10.0.40.17:0", "num_caps": 4192883, "hostname": "gpu-node-07",
+      "client_metadata": { "root": "/", "mount_point": "/mnt/cephfs" } },
+    { "id": 4128822, "addr": "10.0.40.18:0", "num_caps": 3981204, "hostname": "gpu-node-08",
+      "client_metadata": { "root": "/", "mount_point": "/mnt/cephfs" } },
+    { "id": 4128823, "addr": "10.0.40.19:0", "num_caps": 12043, "hostname": "gpu-node-09" },
+    ... (211 more, num_caps 均在 1 万以下)
+]
+
+# 两个客户端各自持有 400 万左右的 cap，占了总量的 92%。
+# 其余 212 个客户端加起来才 70 万。这两台机器就是压力源。`,
+    },
+    {
+      cmd: 'ssh gpu-node-07 "ps aux | grep -c python"',
+      goal: '到客户端上确认它在做什么',
+      hint: '既然定位到机器了，去看看它上面跑的是什么。',
+      output: `48
+
+# 48 个 Python 进程。结合 AI 训练场景，很可能是 DataLoader 的多 worker 并发遍历数据集。`,
+    },
+    {
+      cmd: 'ssh gpu-node-07 "ls /mnt/cephfs/datasets/imagenet-raw | wc -l"',
+      output: `1281167
+
+# 单目录 128 万个文件。
+# 48 个 worker 同时遍历这个目录，每个文件都要 open + stat →
+# 每轮 epoch 产生数千万次元数据请求。这与 8942 req/s 的观测值完全吻合。`,
+    },
+    {
+      cmd: 'ceph fs get prod | grep max_mds',
+      output: `max_mds	1
+
+# 当前只有 1 个 active MDS，另一个是 standby（不分担负载）。`,
+    },
+    {
+      cmd: 'ceph osd pool get cephfs.prod.meta crush_rule',
+      output: `crush_rule: replicated_rule
+
+# 元数据池用的是默认规则，没有限定到 SSD device class。
+# 需要进一步确认这个规则实际选中的是哪类盘。`,
+    },
+  ]}
+/>
+
+## 复盘
+
+**结论**：`gpu-node-07` 和 `gpu-node-08` 上的训练任务用 48 个 worker 并发遍历一个含 128 万文件的单目录，产生约 9000 req/s 的元数据请求。MDS 的 `mds_cache_memory_limit` 仍是默认 4GB，缓存被打满（inode 数顶在 4096k），导致大量请求需要回 metadata pool 读取，进而出现 slow request 与日志段积压。
+
+**依据**：
+
+1. 数据面完全正常（OSD 全 up、PG 全 clean、读带宽 1.8 GiB/s）→ 排除数据路径
+2. `MDS_SLOW_REQUEST` + `MDS_TRIM` 同时出现 → MDS 处理能力不足
+3. `DNS/INOS` 恰好顶在 4096k → 缓存达到上限
+4. `client ls` 显示两个客户端占 92% 的 cap → 压力高度集中
+5. 客户端侧确认：单目录 128 万文件 × 48 并发 worker
+
+**处置分三个层次**（这一点很重要——存储侧只能缓解，治本要靠应用侧）：
+
+```bash
+# ── 立即缓解（存储侧）──
+# 1. 调大 MDS 缓存（注意先确认节点内存余量）
+ceph config set mds mds_cache_memory_limit 34359738368      # 32GB
+
+# 2. 确认元数据池在 SSD 上
+ceph osd crush rule create-replicated ssd-rule default host ssd
+ceph osd pool set cephfs.prod.meta crush_rule ssd-rule
+
+# ── 中期改善（存储侧）──
+# 3. 开多活 MDS，并把不同业务目录钉到不同 rank
+ceph fs set prod max_mds 2
+ceph orch apply mds prod --placement="4"
+setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/datasets
+
+# ── 治本（应用侧 + 架构）──
+# 4. 数据集打包成大文件（webdataset / tar shards / LMDB），
+#    把数千万次元数据操作降到几千次
+# 5. 单目录拆分成多级目录，避免 128 万文件挤在一个目录
+# 6. 长期看：AI 训练场景本就不适合 CephFS，评估 GPFS / Weka / VastData
+```
+
+<Callout type="warn" title="存储侧的调优只能缓解，不能解决">
+把缓存从 4GB 调到 32GB，能撑住 8 倍的元数据量。但训练集群一扩容、数据集一变大，同样的问题会再次出现——而且缓存上限受限于单台机器的内存，**无法通过加节点线性扩展**。
+
+这就是 storplan 选型表里那句「CephFS 元数据缓存受节点内存限制，不足时性能锐减，不建议应用于 AI 场景」的实际含义。这一关的价值不只是学会排查，更是理解那句结论是怎么来的。
+</Callout>
+
+<Callout type="tip" title="值班时怎么跟业务方沟通">
+不要只说「是你们客户端的问题」。有效的沟通是：
+
+1. **给出事实**：你们两台机器占了 92% 的元数据请求，单目录 128 万文件
+2. **给出已做的缓解**：MDS 缓存已从 4GB 调到 32GB，预计能改善 X
+3. **给出对方能做的**：把数据集打包成 tar shards，元数据操作能降两个数量级
+4. **给出长期建议**：这个规模的训练数据集，建议评估专门的并行文件系统
+
+只做第 1 步会变成扯皮，四步都做才是解决问题。
+</Callout>
+
+<Quiz
+  id="qmds-1"
+  question="用户反馈「ls 很慢但拷大文件很快」。这个现象最先能排除什么？"
+  options={[
+    { text: '排除数据路径问题：OSD、data pool、客户端带宽', correct: true },
+    { text: '排除元数据问题', feedback: '恰恰相反，这正指向元数据。' },
+    { text: '排除网络问题', feedback: '还不能完全排除，但数据面正常确实降低了网络的嫌疑。' },
+    { text: '什么都排除不了', feedback: '这个现象的指向性非常强。' },
+  ]}
+  explain={<>
+    ls/stat 走 MDS + metadata pool，读写文件内容走 OSD + data pool。
+    两者表现分化，能立刻把排查范围砍掉一半——这是 CephFS 排障最有价值的一个判断。
+  </>}
+/>
+
+<Quiz
+  id="qmds-2"
+  question="ceph fs status 显示 DNS 和 INOS 都恰好是 4096k。这说明什么？"
+  options={[
+    { text: '文件系统里刚好有 409.6 万个文件', feedback: '两个指标同时卡在一个整数上，是被限制而非巧合。' },
+    { text: 'MDS 缓存已达上限，更多元数据无法缓存', correct: true },
+    { text: 'MDS 出现内存泄漏', feedback: '达到配置上限是预期行为，不是泄漏。' },
+    { text: '元数据池容量满了', feedback: '池容量满会有独立的告警。' },
+  ]}
+  explain={<>缓存条目数顶在整数上是被 mds_cache_memory_limit 卡住的典型特征。缓存打满后请求要回 metadata pool，延迟成倍上升。</>}
+/>
+
+<Quiz
+  id="qmds-3"
+  question="定位到两个客户端占了 92% 的 cap 之后，下面哪些是合理的后续动作？（多选）"
+  options={[
+    { text: '登上这两台机器确认它们在跑什么负载', correct: true },
+    { text: '调大 MDS 缓存作为立即缓解', correct: true },
+    { text: '建议应用侧把海量小文件打包成大文件', correct: true },
+    { text: '直接把这两个客户端踢下线', feedback: '这是业务负载不是攻击，粗暴驱逐会造成训练任务失败，且没解决问题。' },
+  ]}
+  explain={<>
+    存储侧缓解 + 应用侧治本 + 长期架构建议，三层都要给。
+    只做存储侧调优，同样的问题会随着规模增长再次出现。
+  </>}
+/>
+
+## 这一关的落点
+
+- 元数据慢而数据快 → 立刻锁定 MDS 与 metadata pool，不用查 OSD
+- `MDS_SLOW_REQUEST` 与 `MDS_TRIM` 常同时出现，都是 MDS 过载的信号
+- 缓存条目数顶在整数上 = `mds_cache_memory_limit` 卡住了
+- `ceph tell mds.<name> client ls` 按 `num_caps` 排序，能直接找出压力源
+- 处置要分三层：存储侧缓解、应用侧治本、架构层选型
+- 海量小文件 + CephFS 是结构性错配，调参只能延后问题

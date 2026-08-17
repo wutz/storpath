@@ -169,15 +169,19 @@ export function Terminal({
         </ol>
       )}
 
+      {/*
+        输出按列对齐是这套演练的重点（df -h、ceph -s 都靠对齐读），
+        所以窄屏下不折行，改成盒子内部横向滚动。
+      */}
       <div
         ref={scrollRef}
-        className="max-h-96 overflow-y-auto px-4 py-3 font-mono text-[13px] leading-relaxed"
+        className="max-h-96 overflow-auto overscroll-contain px-4 py-3 font-mono text-[13px] leading-relaxed"
         onClick={() => document.getElementById(`term-${id}`)?.focus()}
       >
         {lines.map((line, i) => (
           <pre
             key={i}
-            className={`whitespace-pre-wrap break-words ${
+            className={`whitespace-pre ${
               line.kind === 'input'
                 ? 'text-emerald-400'
                 : line.kind === 'system'
@@ -189,14 +193,18 @@ export function Terminal({
           </pre>
         ))}
 
-        <div className="flex items-center gap-2 text-emerald-400">
+        <div className="sticky left-0 flex items-center gap-2 text-emerald-400">
           <span className="shrink-0">{prompt}</span>
           <input
             id={`term-${id}`}
             value={value}
             spellCheck={false}
             autoComplete="off"
-            className="w-full bg-transparent text-gray-100 outline-none"
+            // 手机输入法默认会首字母大写、自动纠错，敲出来的命令一律匹配不上
+            autoCapitalize="none"
+            autoCorrect="off"
+            enterKeyHint="go"
+            className="w-full min-w-32 bg-transparent text-gray-100 outline-none"
             onChange={(e) => setValue(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') {

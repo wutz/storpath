@@ -30,7 +30,7 @@ function Home() {
 
   return (
     <div className="space-y-10">
-      <section className="rounded-2xl border border-gray-200 bg-white px-6 py-8 shadow-sm sm:px-10 sm:py-10">
+      <section className="rounded-2xl border border-gray-200 bg-white px-5 py-7 shadow-sm sm:px-10 sm:py-10">
         <p className="text-xs font-semibold tracking-widest text-brand-600">
           分布式存储运维工程师成长路径
         </p>
@@ -44,7 +44,8 @@ function Home() {
           ECE、K8s CSI 与商业存储的进阶战场。每节课都配检查点、实验或命令行闯关。
         </p>
 
-        <div className="mt-6 flex flex-wrap gap-4">
+        {/* 手机上排成 2×2，避免最后一格单独掉一行 */}
+        <div className="mt-6 grid grid-cols-2 gap-3 sm:flex sm:flex-wrap sm:gap-4">
           {[
             ['学习阶段', `${stats.trackCount} 个`],
             ['课程', `${stats.lessonCount} 节`],

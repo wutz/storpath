@@ -64,11 +64,11 @@ function LessonPage() {
               </span>
             )}
           </div>
-          <h1 className="mt-2 text-3xl font-bold tracking-tight">{lesson.title}</h1>
-          <p className="mt-2 leading-relaxed text-gray-600">{lesson.summary}</p>
+          <h1 className="mt-2 text-2xl font-bold tracking-tight sm:text-3xl">{lesson.title}</h1>
+          <p className="mt-2 text-sm leading-relaxed text-gray-600 sm:text-base">{lesson.summary}</p>
         </header>
 
-        <section className={`mt-6 rounded-xl border px-5 py-4 ${track.accent.border} ${track.accent.bg}`}>
+        <section className={`mt-6 rounded-xl border px-4 py-4 sm:px-5 ${track.accent.border} ${track.accent.bg}`}>
           <h2 className={`text-sm font-semibold ${track.accent.text}`}>学完这节你能做到</h2>
           <ul className="mt-2 space-y-1.5 text-sm text-gray-700">
             {lesson.objectives.map((objective) => (
@@ -93,7 +93,7 @@ function LessonPage() {
         </LessonKeyContext.Provider>
 
         {lesson.refs && lesson.refs.length > 0 && (
-          <section className="mt-10 rounded-xl border border-gray-200 bg-white px-5 py-4">
+          <section className="mt-10 rounded-xl border border-gray-200 bg-white px-4 py-4 sm:px-5">
             <h2 className="text-sm font-semibold text-gray-900">延伸资料</h2>
             <ul className="mt-2 space-y-1.5 text-sm">
               {lesson.refs.map((ref) => (

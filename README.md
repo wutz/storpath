@@ -54,20 +54,10 @@ bun run deploy     # 手工部署到 Cloudflare Workers
 
 ## 持续部署
 
-推送到 `main` 自动部署，有两条路，**二选一，不要同时开启**（否则一次推送会部署两遍）：
-
-**方案 A：GitHub Actions** —— 仓库里已有 `.github/workflows/deploy.yml`，
-只需在 Settings → Secrets and variables → Actions 添加两个 secret：
-
-| Secret | 从哪来 |
-| --- | --- |
-| `CLOUDFLARE_API_TOKEN` | Cloudflare Dashboard → My Profile → API Tokens → Create Token，用 "Edit Cloudflare Workers" 模板 |
-| `CLOUDFLARE_ACCOUNT_ID` | Dashboard 右侧栏，或执行 `bunx wrangler whoami` |
-
-**方案 B：Cloudflare Workers Builds** —— 原生方案，无需在 GitHub 里存密钥。
+用 **Cloudflare Workers Builds**，无需在 GitHub 里存密钥。
 Dashboard → Compute (Workers) → `storpath` → Settings → Build → Connect，
 授权 GitHub App 并选中 `wutz/storpath`，构建命令填 `bun run build`，部署命令填 `bunx wrangler deploy`。
-选这条请删掉 `.github/workflows/deploy.yml`。
+之后推送到 `main` 即自动部署。
 
 > Workers Builds 的仓库连接依赖 GitHub App 的 OAuth 授权，只能在 Dashboard 上完成，wrangler CLI 没有对应命令。
 

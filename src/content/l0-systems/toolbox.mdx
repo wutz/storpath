@@ -11,49 +11,58 @@
 
 顺序永远是：**先用零开销的工具收敛范围，再用追踪工具挖根因**。反过来做，你会在生产机器上跑一个高开销的 trace，然后被业务方投诉。
 
-## 压测：fio 的四件套
+## 压测：elbencho 的四件套
 
 压测不是"跑个分"，是**回答一个具体问题**。先想清楚问题，再选参数。
 
+本课统一用 elbencho —— 它由 BeeGFS 创始人开发，一个工具覆盖了 fio、mdtest、ior 的功能，块设备、文件系统、S3 都能压，而且原生支持多客户端协同。学一套参数就够用。
+
 ```bash
 # 1. 顺序写 —— 回答"这块盘的写带宽上限是多少"
-fio --name=seqwrite --filename=/dev/nvme0n1 --rw=write \
-    --bs=1M --iodepth=32 --numjobs=4 --ioengine=libaio --direct=1 \
-    --runtime=60 --time_based --group_reporting
+elbencho -w --direct -b 1M -t 4 --iodepth 32 \
+         -s 100g --timelimit 60 --lat /dev/nvme0n1
 
 # 2. 顺序读 —— 回答"读带宽上限"
-fio --name=seqread ... --rw=read --bs=1M ...
+elbencho -r --direct -b 1M -t 4 --iodepth 32 -s 100g --timelimit 60 /dev/nvme0n1
 
 # 3. 随机写 —— 回答"数据库类负载能跑多少 IOPS"
-fio --name=randwrite ... --rw=randwrite --bs=4k --iodepth=64 ...
+elbencho -w --direct -b 4k -t 4 --iodepth 64 --rand --randamount 50g \
+         -s 100g --timelimit 60 --lat --latpercent /dev/nvme0n1
 
 # 4. 随机读 —— 回答"元数据类负载能跑多少 IOPS"
-fio --name=randread ... --rw=randread --bs=4k --iodepth=64 ...
+elbencho -r --direct -b 4k -t 4 --iodepth 64 --rand --randamount 50g \
+         -s 100g --timelimit 60 --lat --latpercent /dev/nvme0n1
 ```
 
 必须理解的几个参数：
 
 | 参数 | 含义 | 常见错误 |
 | --- | --- | --- |
-| `--direct=1` | 绕过 page cache | **忘了加，测出的是内存速度** |
-| `--bs` | 块大小 | 不写块大小的 IOPS 数字没有意义 |
-| `--iodepth` | 单线程队列深度 | 只测 iodepth=1 会低估设备能力 |
-| `--numjobs` | 并发线程数 | 单线程压不满 NVMe |
-| `--time_based --runtime` | 按时间跑而非按数据量 | 不加可能只测到 SSD 的缓存区间 |
+| `--direct` | 绕过 page cache | **忘了加，测出的是内存速度** |
+| `-b` | 块大小 | 不写块大小的 IOPS 数字没有意义 |
+| `--iodepth` | 单线程异步队列深度（默认 1 = 同步 I/O） | 用默认值会低估 NVMe 的能力 |
+| `-t` | 并发线程数 | 单线程压不满 NVMe |
+| `--rand --randamount` | 随机 offset，以及每线程的随机 I/O 总量 | 不加 `--rand` 测的其实是顺序 |
+| `--timelimit` | 按时间跑而非按数据量 | 不加就是写完 `-s` 停，可能只测到 SSD 的缓存区间 |
+| `--lat --latpercent` | 输出延迟均值与百分位 | 只报 IOPS 不报延迟，等于没测 |
 
 <Callout type="trap" title="三个让压测结果失真的经典错误">
-1. **忘了 `--direct=1`** —— HDD 跑出 3GB/s，测的是 page cache
-2. **测试时长太短** —— SSD 有 SLC 缓存，前 30 秒很快，之后掉到稳态。至少跑 5 分钟才能看到真实的稳态性能
-3. **在生产盘上跑写测试** —— `--filename=/dev/nvme0n1` 会直接覆盖裸设备上的数据。**动手前先确认这块盘是空的**
+1. **忘了 `--direct`** —— HDD 跑出 3GB/s，测的是 page cache
+2. **测试时长太短** —— SSD 有 SLC 缓存，前 30 秒很快，之后掉到稳态。至少 `--timelimit 300` 才能看到真实的稳态性能
+3. **在生产盘上跑写测试** —— 路径写成 `/dev/nvme0n1` 时 `-w` 会直接覆盖裸设备上的数据。**动手前先确认这块盘是空的**
 </Callout>
 
-## 压测：elbencho 测共享文件系统
+## 压测：多客户端压共享文件系统
 
-fio 测的是单机块设备。共享文件系统（CephFS、GPFS）需要**多客户端并发**才能压出真实能力，这时用 elbencho——它由 BeeGFS 创始人开发，一个工具覆盖了 fio、mdtest、ior 的功能，同时支持文件系统、S3 和块设备。
+单机压出来的数字只是上限参考。共享文件系统（CephFS、GPFS）需要**多客户端并发**才能压出真实能力——同一个 elbencho，加上 service 模式即可：
 
 ```bash
-# 大文件带宽：多客户端并发写
-elbencho -w -b 4M -t 16 --direct -s 100g /mnt/cephfs/bench/file
+# 每台客户端上先起一个 service（后台常驻）
+elbencho --service
+
+# 协调节点统一发起：4 台客户端一起压同一个文件系统
+elbencho --hosts client1,client2,client3,client4 \
+         -w -b 4M -t 16 --direct -s 100g /mnt/cephfs/bench/file
 
 # 多文件（元数据）性能：这才是共享文件系统真正的考验
 elbencho -w -d -n 100 -N 10000 -s 4k -t 16 /mnt/cephfs/bench
@@ -124,7 +133,7 @@ bpftrace -e 'kprobe:blk_account_io_done /nsecs/ { ... }'
 - 客户端：4 台，与存储节点独立
 
 ## 测试方法
-- 工具：fio 3.35 / elbencho 3.1-7
+- 工具：elbencho 3.1-7（4 台客户端 service 模式）
 - 参数：见附录完整命令行
 - 每组跑 300 秒，取稳态区间；每组重复 3 次取中位数
 
@@ -147,16 +156,16 @@ bpftrace -e 'kprobe:blk_account_io_done /nsecs/ { ... }'
 
 <Quiz
   id="tool-1"
-  question="用 fio 测一块企业级 NVMe 的顺序写，跑了 30 秒得到 6.8 GB/s，远超厂商标称的 5 GB/s。最可能的原因是？"
+  question="用 elbencho 测一块企业级 NVMe 的顺序写，跑了 30 秒得到 6.8 GB/s，远超厂商标称的 5 GB/s。最可能的原因是？"
   options={[
     { text: '这块盘性能超出标称，是好事', feedback: '大幅超出标称值通常意味着测试方法有问题，而不是中彩票。' },
-    { text: '忘了加 --direct=1，测的是 page cache', correct: true },
+    { text: '忘了加 --direct，测的是 page cache', correct: true },
     { text: 'PCIe 链路超频了', feedback: 'PCIe 不会自动超频。' },
     { text: '块大小设得太大', feedback: '块大小影响效率但不会让结果超过物理上限。' },
   ]}
   explain={<>
-    没有 --direct=1 时数据先进 page cache，write() 立刻返回，测到的是内存带宽。
-    另一个常见原因是测试时长太短，只覆盖了 SSD 的 SLC 缓存区间——所以要 --time_based 跑够 5 分钟看稳态。
+    没有 --direct 时数据先进 page cache，write() 立刻返回，测到的是内存带宽。
+    另一个常见原因是测试时长太短，只覆盖了 SSD 的 SLC 缓存区间——所以要 --timelimit 300 跑够 5 分钟看稳态。
   </>}
 />
 
@@ -175,8 +184,8 @@ bpftrace -e 'kprobe:blk_account_io_done /nsecs/ { ... }'
 ## 这节课的落点
 
 - 先用零开销的静态工具收敛范围，再用 bpftrace 类工具挖根因
-- fio 四件套：顺序读写测带宽、随机读写测 IOPS；`--direct=1` 必加，时长要够
-- elbencho 用于多客户端压共享文件系统，尤其是多文件元数据场景
+- elbencho 四件套：顺序读写测带宽、随机读写测 IOPS；`--direct` 必加，`--timelimit` 时长要够
+- 同一个 elbencho 加 `--service` / `--hosts` 就能多客户端压共享文件系统，尤其是多文件元数据场景
 - 裸盘压测顺便用 `lspci` 查 PCIe 是否 downgraded，这类硬件问题要在上线前发现
 - 报告必须写清方法、环境和**未覆盖的场景**
 

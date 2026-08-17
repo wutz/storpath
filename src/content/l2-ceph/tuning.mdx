@@ -80,7 +80,7 @@ osd  commit_latency(ms)  apply_latency(ms)
 很多"存储慢"其实是客户端并发不够。单线程、队列深度 1 的负载，无论后端多强都跑不快。
 
 ```bash
-# 验证：把 fio 的 numjobs 和 iodepth 加大，看总吞吐是否线性上升
+# 验证：把 elbencho 的 -t（线程数）和 --iodepth 加大，看总吞吐是否线性上升
 # 如果上升，说明后端还有余量，问题在客户端并发
 ```
 

@@ -113,24 +113,23 @@ nvme0n1 12043   3210   770752   205440    0.00   1.20   0.00  0.04    0.31    0.
   </>}
 />
 
-## 动手：用 fio 亲手验证一遍
+## 动手：用 elbencho 亲手验证一遍
 
 理论看完，一定要自己跑一次。找一块**空闲的测试盘**（不要在生产盘上跑写测试）：
 
 ```bash
 # 4KB 随机读，队列深度从 1 慢慢加，观察 IOPS 与延迟怎么变
-fio --name=randread --filename=/dev/nvme0n1 --rw=randread \
-    --bs=4k --ioengine=libaio --direct=1 --runtime=30 --time_based \
-    --iodepth=1 --numjobs=1 --group_reporting
+elbencho -r --direct -b 4k -t 1 --iodepth 1 --rand --randamount 10g \
+         -s 100g --timelimit 30 --lat --latpercent /dev/nvme0n1
 
-# 把 iodepth 换成 4、16、64 各跑一次，记录三组数字：
+# 把 --iodepth 换成 4、16、64 各跑一次，记录三组数字：
 #   IOPS、平均延迟、P99 延迟
 ```
 
 把三组数字画成表，你会亲眼看到那条曲线：IOPS 先快速上升然后趋于平缓，而延迟在 IOPS 见顶之后开始陡增。**那个拐点就是这块盘的可用工作区间上限。**
 
-<Callout type="warn" title="direct=1 必须加">
-不加 `--direct=1`，数据会走页缓存，你测的就是内存速度而不是盘速度。看到"HDD 跑出 3GB/s"这种结果，八成就是忘了这个参数。
+<Callout type="warn" title="--direct 必须加">
+不加 `--direct`，数据会走页缓存，你测的就是内存速度而不是盘速度。看到"HDD 跑出 3GB/s"这种结果，八成就是忘了这个参数。
 </Callout>
 
 ## 这节课的落点

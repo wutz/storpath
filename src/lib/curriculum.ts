@@ -185,19 +185,19 @@ export const tracks: Track[] = [
       {
         id: 'toolbox',
         title: '观测与压测工具箱',
-        summary: '把 iostat/vmstat/perf/bpftrace 和 fio/elbencho 串成一套可复用的手法。',
+        summary: '把 iostat/vmstat/perf/bpftrace 和 elbencho 串成一套可复用的手法。',
         kind: 'lab',
         status: 'ready',
         minutes: 45,
         objectives: [
-          '用 fio 设计出能回答具体问题的测试用例，而不是跑个分',
-          '用 elbencho 对共享文件系统做多客户端压测',
+          '用 elbencho 设计出能回答具体问题的测试用例，而不是跑个分',
+          '用 elbencho service 模式对共享文件系统做多客户端压测',
           '用 bpftrace 抓出单次慢 I/O 的调用栈',
         ],
         outline: [
           '静态工具 vs 动态追踪：各自的代价',
-          'fio 四件套：随机/顺序 × 读/写，以及 numjobs 与 iodepth',
-          'elbencho 多客户端压测共享文件系统',
+          'elbencho 四件套：随机/顺序 × 读/写，以及 -t 与 --iodepth',
+          'elbencho service 模式多客户端压测共享文件系统',
           'bpftrace 一行流：biolatency、biosnoop',
           '压测报告怎么写才有说服力',
         ],
@@ -603,7 +603,7 @@ export const tracks: Track[] = [
           '掌握几个高收益的调优参数及其风险',
         ],
         outline: [
-          '基线怎么打：rados bench、fio、elbencho',
+          '基线怎么打：rados bench、elbencho',
           '客户端并发与队列深度',
           'OSD 侧：BlueStore、WAL/DB 分离、内存目标',
           '网络侧：MTU、双网、带宽饱和判断',

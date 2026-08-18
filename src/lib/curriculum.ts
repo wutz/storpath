@@ -192,12 +192,14 @@ export const tracks: Track[] = [
         objectives: [
           '用 elbencho 设计出能回答具体问题的测试用例，而不是跑个分',
           '用 elbencho service 模式对共享文件系统做多客户端压测',
+          '读懂 first done / last done 两列，从差距里看出不均衡',
           '用 bpftrace 抓出单次慢 I/O 的调用栈',
         ],
         outline: [
           '静态工具 vs 动态追踪：各自的代价',
           'elbencho 四件套：随机/顺序 × 读/写，以及 -t 与 --iodepth',
           'elbencho service 模式多客户端压测共享文件系统',
+          '结果解读：first done vs last done，差距过大的排查路径',
           'bpftrace 一行流：biolatency、biosnoop',
           '压测报告怎么写才有说服力',
         ],

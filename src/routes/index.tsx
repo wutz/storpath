@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { KIND_LABEL, KIND_STYLE, allLessons, lessonKey, stats, tracks } from '#/lib/curriculum'
+import { KIND_LABEL, KIND_STYLE, lessonKey, stats, tracks } from '#/lib/curriculum'
 import { type PathItem, type RolePath, getRole, rolePath, roles } from '#/lib/roles'
 import { useProgress } from '#/lib/progress'
 
@@ -18,39 +18,11 @@ function Home() {
 
   const progress = useProgress()
   const doneSet = new Set(progress.done)
-  const doneCount = allLessons.filter(({ track, lesson }) =>
-    doneSet.has(lessonKey(track.id, lesson.id)),
-  ).length
 
   return (
     <div className="space-y-8">
-      <section className="rounded-2xl border border-gray-200 bg-white px-5 py-7 shadow-sm sm:px-10 sm:py-9">
-        <p className="text-xs font-semibold tracking-widest text-brand-600">存储工程师成长路径</p>
-        <h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">
-          从看懂一条 iostat，到扛住一整套 PB 级集群的容量账
-        </h1>
-        <p className="mt-4 max-w-3xl leading-relaxed text-gray-600">
-          先把 Linux 上的 I/O 路径和观测手法走通，再建立块 / 文件 / 对象与冗余机制的通用心智模型，
-          接着在 Ceph 这套统一存储上把部署、日常运维和故障排查跑成闭环，然后学会把业务需求翻译成
-          机器配置，最后走进 GPFS ECE、K8s CSI 与商业存储的进阶战场。
-        </p>
-        <div className="mt-6 grid grid-cols-2 gap-3 sm:flex sm:flex-wrap sm:gap-4">
-          {[
-            ['学习阶段', `${stats.trackCount} 个`],
-            ['课程', `${stats.lessonCount} 节`],
-            ['预计学时', `${Math.round(stats.totalMinutes / 60)} 小时`],
-            ['已完成', `${doneCount} 节`],
-          ].map(([label, value]) => (
-            <div key={label} className="rounded-xl bg-gray-50 px-4 py-2.5">
-              <div className="text-lg font-bold text-gray-900">{value}</div>
-              <div className="text-xs text-gray-500">{label}</div>
-            </div>
-          ))}
-        </div>
-      </section>
-
       <section className="rounded-2xl border border-brand-200 bg-brand-50/60 px-5 py-5 sm:px-6">
-        <h2 className="text-xl font-bold">选一条路线</h2>
+        <h1 className="text-xl font-bold">选一条路线</h1>
         <p className="mt-1.5 text-sm leading-relaxed text-gray-600">
           {stats.lessonCount} 节课不必都学。挑一个和你当前岗位最近的身份，
           下面会给出裁剪过的清单 —— 只留这个岗位真正会用到的课，并切成几段推进。

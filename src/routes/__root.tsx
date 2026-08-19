@@ -11,7 +11,7 @@ export const Route = createRootRoute({
       {
         name: 'description',
         content:
-          '存储工程师的在线交互式学习项目：按解决方案架构师、计算集群运维、存储运维三条岗位路线组织，覆盖 Linux 系统基础、Ceph 三种存储、容量规划、GPFS ECE 与 K8s CSI。',
+          '存储工程师的在线交互式学习项目：按解决方案架构师、集群运维、存储运维三条岗位路线组织，覆盖 Linux 系统基础、Ceph 三种存储、容量规划、GPFS ECE 与 K8s CSI。',
       },
     ],
     links: [{ rel: 'stylesheet', href: appCss }],

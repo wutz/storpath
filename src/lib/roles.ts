@@ -89,7 +89,7 @@ export const roles: Role[] = [
   },
   {
     id: 'cluster-ops',
-    title: '计算集群运维工程师',
+    title: '集群运维工程师',
     alias: '服务工程师 · GPU 集群 · K8s 平台',
     tagline: '存储不是你的产品，但故障总是先落到你头上',
     desc: '你管的是计算节点、GPU 集群和 K8s 平台，存储是一个依赖。这条线只学接入与排障用得上的那部分后端原理，不碰集群部署与深度调优。',

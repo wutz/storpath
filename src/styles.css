@@ -1,13 +1,17 @@
 @import "tailwindcss";
 
-/* 主题色取 Ceph 品牌红（brand-500 ≈ #e2403a），深浅两档按感知亮度排开 */
+/*
+ * 主题色取 Ceph 品牌红，但往亮、往暖各让一步（hue 30、降饱和），
+ * 免得纯正红被当成报错色。brand-500 ≈ #df6a59。
+ * brand-600 是按钮底色，白字对比度 4.73，别再往上提亮。
+ */
 @theme {
-  --color-brand-50: oklch(0.97 0.02 25);
-  --color-brand-100: oklch(0.93 0.05 25);
-  --color-brand-200: oklch(0.86 0.09 26);
-  --color-brand-500: oklch(0.61 0.2 27);
-  --color-brand-600: oklch(0.51 0.19 28);
-  --color-brand-700: oklch(0.44 0.17 29);
+  --color-brand-50: oklch(0.975 0.016 30);
+  --color-brand-100: oklch(0.94 0.04 30);
+  --color-brand-200: oklch(0.88 0.07 30);
+  --color-brand-500: oklch(0.66 0.15 30);
+  --color-brand-600: oklch(0.575 0.16 30);
+  --color-brand-700: oklch(0.5 0.15 30);
 }
 
 html {

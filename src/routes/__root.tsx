@@ -7,11 +7,11 @@ export const Route = createRootRoute({
     meta: [
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' },
-      { title: 'Storpath — 分布式存储运维工程师成长路径' },
+      { title: 'Storpath — 存储工程师成长路径' },
       {
         name: 'description',
         content:
-          '分布式存储运维工程师的在线交互式学习项目：从 Linux 系统基础到 Ceph 三种存储，再到容量规划、GPFS ECE 与 K8s CSI。',
+          '存储工程师的在线交互式学习项目：按解决方案架构师、计算集群运维、存储运维三条岗位路线组织，覆盖 Linux 系统基础、Ceph 三种存储、容量规划、GPFS ECE 与 K8s CSI。',
       },
     ],
     links: [{ rel: 'stylesheet', href: appCss }],
@@ -33,7 +33,7 @@ function RootLayout() {
                 S
               </span>
               <span className="text-base font-bold tracking-tight">Storpath</span>
-              <span className="hidden text-xs text-gray-400 sm:inline">存储运维成长路径</span>
+              <span className="hidden text-xs text-gray-400 sm:inline">存储工程师成长路径</span>
             </Link>
             <nav className="-mr-1 flex items-center gap-0.5 overflow-x-auto text-sm [scrollbar-width:none] sm:gap-1 [&::-webkit-scrollbar]:hidden">
               <Link
@@ -42,7 +42,7 @@ function RootLayout() {
                 activeProps={{ className: 'bg-gray-100 text-gray-900' }}
                 className="shrink-0 rounded-lg px-2.5 py-1.5 text-gray-600 transition hover:bg-gray-100 sm:px-3"
               >
-                路径
+                岗位路线
               </Link>
               <Link
                 to="/labs"
@@ -70,7 +70,7 @@ function RootLayout() {
         <footer className="mt-12 border-t border-gray-200 bg-white sm:mt-16">
           <div className="mx-auto max-w-6xl px-3 py-6 text-xs text-gray-400 sm:px-4">
             <p>
-              Storpath · 分布式存储运维工程师成长路径。内容基于 k8s-in-action 部署手册、Storplan
+              Storpath · 存储工程师成长路径，按岗位分成方案、计算运维、存储运维三条路线。内容基于 k8s-in-action 部署手册、Storplan
               规划工具与 Systems Performance (2nd Edition) 整理。
             </p>
             <p className="mt-1">学习进度保存在本地浏览器，换设备不同步。</p>

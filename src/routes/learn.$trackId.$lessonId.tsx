@@ -22,7 +22,7 @@ function LessonPage() {
           没有这节课：{trackId}/{lessonId}
         </p>
         <Link to="/" className="mt-3 inline-block text-sm text-brand-600 hover:underline">
-          返回学习路径
+          返回岗位路线
         </Link>
       </div>
     )
@@ -40,7 +40,7 @@ function LessonPage() {
       <article className="min-w-0">
         <nav className="text-xs text-gray-400">
           <Link to="/" className="hover:text-gray-700">
-            学习路径
+            岗位路线
           </Link>
           <span className="mx-1.5">/</span>
           <Link

@@ -16,7 +16,7 @@ function TrackPage() {
       <div className="rounded-xl border border-gray-200 bg-white px-6 py-10 text-center">
         <p className="text-gray-500">没有这个阶段：{trackId}</p>
         <Link to="/" className="mt-3 inline-block text-sm text-brand-600 hover:underline">
-          返回岗位路线
+          返回学习路径
         </Link>
       </div>
     )
@@ -32,7 +32,7 @@ function TrackPage() {
     <div className="space-y-6">
       <nav className="text-xs text-gray-400">
         <Link to="/" className="hover:text-gray-700">
-          岗位路线
+          学习路径
         </Link>
         <span className="mx-1.5">/</span>
         <span className="text-gray-600">

@@ -42,7 +42,7 @@ function RootLayout() {
                 activeProps={{ className: 'bg-gray-100 text-gray-900' }}
                 className="shrink-0 rounded-lg px-2.5 py-1.5 text-gray-600 transition hover:bg-gray-100 sm:px-3"
               >
-                岗位路线
+                路径
               </Link>
               <Link
                 to="/labs"

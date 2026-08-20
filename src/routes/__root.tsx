@@ -14,7 +14,10 @@ export const Route = createRootRoute({
           '存储工程师的在线交互式学习项目：按解决方案架构师、集群运维、存储运维三条岗位路线组织，覆盖 Linux 系统基础、Ceph 三种存储、容量规划、GPFS ECE 与 K8s CSI。',
       },
     ],
-    links: [{ rel: 'stylesheet', href: appCss }],
+    links: [
+      { rel: 'stylesheet', href: appCss },
+      { rel: 'icon', href: '/logo.svg', type: 'image/svg+xml' },
+    ],
   }),
   component: RootLayout,
 })
@@ -29,9 +32,7 @@ function RootLayout() {
         <header className="sticky top-0 z-20 border-b border-gray-200 bg-white/85 backdrop-blur">
           <div className="mx-auto flex max-w-6xl items-center justify-between gap-2 px-3 py-2.5 sm:px-4 sm:py-3">
             <Link to="/" className="flex shrink-0 items-center gap-2">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-brand-600 text-sm font-bold text-white">
-                S
-              </span>
+              <img src="/logo.svg" alt="" width={28} height={28} className="h-7 w-7 shrink-0" />
               <span className="text-base font-bold tracking-tight">Storpath</span>
               <span className="hidden text-xs text-gray-400 sm:inline">存储工程师成长路径</span>
             </Link>

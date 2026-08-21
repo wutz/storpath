@@ -7,11 +7,11 @@ export const Route = createRootRoute({
     meta: [
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' },
-      { title: 'Storpath — 存储工程师成长路径' },
+      { title: 'Storpath — 存储运维工程师成长路径' },
       {
         name: 'description',
         content:
-          '存储工程师的在线交互式学习项目：按解决方案架构师、集群运维、存储运维三条岗位路线组织，覆盖 Linux 系统基础、Ceph 三种存储、容量规划、GPFS ECE 与 K8s CSI。',
+          '存储运维工程师的在线交互式学习项目：按解决方案架构师、集群运维、存储运维三条岗位路线组织，覆盖 Linux 系统基础、Ceph 三种存储、容量规划、GPFS ECE 与 K8s CSI。',
       },
     ],
     links: [
@@ -45,7 +45,7 @@ function RootLayout() {
               <img src="/logo.svg" alt="" width={26} height={26} className="h-6.5 w-6.5 shrink-0" />
               <span className="text-[15px] font-semibold tracking-[-0.02em]">Storpath</span>
               <span className="hidden border-l border-line pl-2.5 text-xs text-mute sm:inline">
-                存储工程师成长路径
+                存储运维工程师成长路径
               </span>
             </Link>
             <nav className="-mr-1 flex items-center gap-0.5 overflow-x-auto text-sm [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -75,7 +75,7 @@ function RootLayout() {
           <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
             <div className="eyebrow">Storpath</div>
             <p className="mt-3 max-w-3xl text-sm leading-relaxed text-body">
-              存储工程师成长路径，按岗位分成方案、计算运维、存储运维三条路线。内容基于 k8s-in-action
+              存储运维工程师成长路径，按岗位分成方案、计算运维、存储运维三条路线。内容基于 k8s-in-action
               部署手册、Storplan 规划工具与 Systems Performance (2nd Edition) 整理。
             </p>
             <p className="mt-2 text-xs text-mute">学习进度保存在本地浏览器，换设备不同步。</p>

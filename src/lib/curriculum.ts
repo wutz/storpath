@@ -37,13 +37,6 @@ export interface Track {
   title: string
   subtitle: string
   goal: string
-  /** Tailwind 类名片段，用于阶段配色 */
-  accent: {
-    text: string
-    bg: string
-    border: string
-    dot: string
-  }
   lessons: Lesson[]
 }
 
@@ -54,11 +47,18 @@ export const KIND_LABEL: Record<LessonKind, string> = {
   planner: '规划',
 }
 
+/*
+ * 阶段（L0–L4）不再各配一种颜色 —— 五条彩虹加品牌色，颜色就没意义了。
+ * 阶段身份交给等宽的 L0…L4 代号本身，颜色预算留给品牌色和下面三个状态徽标。
+ */
+export const LEVEL_CHIP =
+  'rounded-xs bg-soft-2 px-1.5 py-0.5 font-mono text-[10px] leading-4 text-body'
+
 export const KIND_STYLE: Record<LessonKind, string> = {
-  concept: 'bg-gray-100 text-gray-600',
-  lab: 'bg-emerald-100 text-emerald-700',
-  quest: 'bg-amber-100 text-amber-700',
-  planner: 'bg-violet-100 text-violet-700',
+  concept: 'bg-soft-2 text-body',
+  lab: 'bg-info-soft text-info-deep',
+  quest: 'bg-warn-soft text-warn-deep',
+  planner: 'bg-plum-soft text-plum-deep',
 }
 
 const REF_SYSPERF: LessonRef = { label: 'Systems Performance, 2nd Edition — Brendan Gregg' }
@@ -72,12 +72,6 @@ export const tracks: Track[] = [
     title: '系统基础',
     subtitle: 'Linux 性能与观测',
     goal: '存储工程师的地基。看得懂 iostat 的每一列，能用 USE 方法在十分钟内把问题定位到 CPU、内存、磁盘还是网络。',
-    accent: {
-      text: 'text-sky-700',
-      bg: 'bg-sky-50',
-      border: 'border-sky-200',
-      dot: 'bg-sky-500',
-    },
     lessons: [
       {
         id: 'use-method',
@@ -214,12 +208,6 @@ export const tracks: Track[] = [
     title: '存储原理',
     subtitle: '块 / 文件 / 对象与冗余机制',
     goal: '建立分布式存储的通用心智模型：数据怎么切、怎么冗余、故障时怎么恢复，换任何一款产品都通用。',
-    accent: {
-      text: 'text-indigo-700',
-      bg: 'bg-indigo-50',
-      border: 'border-indigo-200',
-      dot: 'bg-indigo-500',
-    },
     lessons: [
       {
         id: 'three-types',
@@ -332,12 +320,6 @@ export const tracks: Track[] = [
     title: 'Ceph 主战场',
     subtitle: '一套集群，三种存储',
     goal: '这是分布式存储运维的核心战场。从架构原理到部署、日常运维、故障排查，形成完整闭环。',
-    accent: {
-      text: 'text-rose-700',
-      bg: 'bg-rose-50',
-      border: 'border-rose-200',
-      dot: 'bg-rose-500',
-    },
     lessons: [
       {
         id: 'architecture',
@@ -622,12 +604,6 @@ export const tracks: Track[] = [
     title: '容量与性能规划',
     subtitle: '从需求到方案',
     goal: '把业务需求翻译成机器数量、盘型号和网络配置 —— 这是运维工程师开始有话语权的地方。',
-    accent: {
-      text: 'text-violet-700',
-      bg: 'bg-violet-50',
-      border: 'border-violet-200',
-      dot: 'bg-violet-500',
-    },
     lessons: [
       {
         id: 'requirements',
@@ -721,12 +697,6 @@ export const tracks: Track[] = [
     title: '进阶方向',
     subtitle: 'GPFS ECE、K8s 与商业存储',
     goal: '走出 Ceph 的舒适区。企业级高性能场景里，GPFS、Weka、VastData 和 K8s CSI 才是常态。',
-    accent: {
-      text: 'text-emerald-700',
-      bg: 'bg-emerald-50',
-      border: 'border-emerald-200',
-      dot: 'bg-emerald-500',
-    },
     lessons: [
       {
         id: 'gpfs-concept',

@@ -5,6 +5,7 @@ import {
   type CapacityInput,
 } from '#/lib/ceph-capacity'
 import { formatNumber, formatPercent, formatTB, formatTiB } from '#/lib/units'
+import { Field, NoteList, Panel, Stat, inputCls } from './ui'
 
 const DISK_SIZES = [3.84, 7.68, 15.36, 16, 18, 22]
 
@@ -17,19 +18,6 @@ const DEFAULTS: CapacityInput = {
   reserveNodeFailure: true,
 }
 
-function Field({ label, hint, children }: { label: string; hint?: string; children: React.ReactNode }) {
-  return (
-    <label className="block">
-      <span className="mb-1 block text-xs font-medium text-gray-600">{label}</span>
-      {children}
-      {hint && <span className="mt-1 block text-[11px] text-gray-400">{hint}</span>}
-    </label>
-  )
-}
-
-const inputCls =
-  'w-full rounded-lg border border-gray-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100'
-
 export function CephCapacityPlanner() {
   const [input, setInput] = useState<CapacityInput>(DEFAULTS)
   const result = planCephCapacity(input)
@@ -38,23 +26,7 @@ export function CephCapacityPlanner() {
     setInput((prev) => ({ ...prev, [key]: value }))
 
   return (
-    <section className="my-6 overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
-      <header className="flex items-center justify-between border-b border-gray-100 px-4 py-2.5">
-        <div className="flex items-center gap-2">
-          <span className="rounded bg-violet-100 px-2 py-0.5 text-xs font-semibold text-violet-700">
-            计算器
-          </span>
-          <span className="text-sm font-medium text-gray-700">Ceph 集群容量推算</span>
-        </div>
-        <button
-          type="button"
-          onClick={() => setInput(DEFAULTS)}
-          className="text-xs text-gray-400 transition hover:text-gray-700"
-        >
-          重置
-        </button>
-      </header>
-
+    <Panel eyebrow="Planner" title="Ceph 集群容量推算" onReset={() => setInput(DEFAULTS)}>
       <div className="grid gap-5 px-4 py-4 md:grid-cols-2">
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
@@ -119,34 +91,34 @@ export function CephCapacityPlanner() {
               step={0.05}
               value={input.fullRatio}
               onChange={(e) => set('fullRatio', Number(e.target.value))}
-              className="w-full accent-violet-600"
+              className="w-full accent-brand-600"
             />
           </Field>
 
-          <label className="flex items-center gap-2 text-sm text-gray-700">
+          <label className="flex items-center gap-2 text-sm text-body">
             <input
               type="checkbox"
               checked={input.reserveNodeFailure}
               onChange={(e) => set('reserveNodeFailure', e.target.checked)}
-              className="h-4 w-4 accent-violet-600"
+              className="h-4 w-4 accent-brand-600"
             />
             预留一个节点的容量用于故障自愈
           </label>
         </div>
 
         <div className="space-y-3">
-          <div className="rounded-xl bg-violet-50 px-4 py-4 text-center">
-            <div className="text-xs font-medium text-violet-700">实际可写容量</div>
-            <div className="mt-1 text-3xl font-bold text-violet-900">
-              {formatTiB(result.usableTiB)}
-            </div>
-            <div className="mt-1 text-xs text-violet-700">
-              端到端效率 {formatPercent(result.overallEfficiency)} · 每 1 TiB 可用需采购{' '}
-              {result.tbPerUsableTiB.toFixed(2)} TB 裸盘
-            </div>
-          </div>
+          <Stat
+            label="实际可写容量"
+            value={formatTiB(result.usableTiB)}
+            note={
+              <>
+                端到端效率 {formatPercent(result.overallEfficiency)} · 每 1 TiB 可用需采购{' '}
+                {result.tbPerUsableTiB.toFixed(2)} TB 裸盘
+              </>
+            }
+          />
 
-          <dl className="divide-y divide-gray-100 rounded-xl border border-gray-200 text-sm">
+          <dl className="divide-y divide-line rounded-md text-sm shadow-hair">
             {[
               ['OSD 数量', `${formatNumber(result.osdCount)} 个`],
               ['裸容量（厂商口径）', formatTB(result.rawTB)],
@@ -154,25 +126,16 @@ export function CephCapacityPlanner() {
               [`冗余后（${result.option.label}）`, formatTiB(result.afterRedundancyTiB)],
               ['可容忍主机故障', `${result.option.tolerance} 台`],
             ].map(([label, value]) => (
-              <div key={label} className="flex items-center justify-between px-3 py-2">
-                <dt className="text-gray-500">{label}</dt>
-                <dd className="font-medium text-gray-900">{value}</dd>
+              <div key={label} className="flex items-center justify-between gap-3 px-3.5 py-2">
+                <dt className="text-body">{label}</dt>
+                <dd className="font-mono text-[13px] text-ink">{value}</dd>
               </div>
             ))}
           </dl>
 
-          {result.warnings.length > 0 && (
-            <ul className="space-y-1.5 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
-              {result.warnings.map((warning) => (
-                <li key={warning} className="flex gap-1.5">
-                  <span className="shrink-0">⚠</span>
-                  <span>{warning}</span>
-                </li>
-              ))}
-            </ul>
-          )}
+          {result.warnings.length > 0 && <NoteList items={result.warnings} tone="warn" />}
         </div>
       </div>
-    </section>
+    </Panel>
   )
 }

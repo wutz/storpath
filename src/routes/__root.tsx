@@ -60,6 +60,14 @@ function RootLayout() {
               <Link to="/labs" activeProps={{ className: 'bg-soft-2 text-ink' }} className={navLink}>
                 实验与闯关
               </Link>
+              <a
+                href="https://storplan.wutz.dev/"
+                target="_blank"
+                rel="noreferrer"
+                className={navLink}
+              >
+                规划工具 ↗
+              </a>
               <a href="https://wutz.dev/" target="_blank" rel="noreferrer" className={navLink}>
                 wutz.dev ↗
               </a>
@@ -76,7 +84,16 @@ function RootLayout() {
             <div className="eyebrow">Storpath</div>
             <p className="mt-3 max-w-3xl text-sm leading-relaxed text-body">
               存储运维工程师成长路径，按岗位分成方案、计算运维、存储运维三条路线。内容基于 k8s-in-action
-              部署手册、Storplan 规划工具与 Systems Performance (2nd Edition) 整理。
+              部署手册、
+              <a
+                href="https://storplan.wutz.dev/"
+                target="_blank"
+                rel="noreferrer"
+                className="text-ink underline underline-offset-4 decoration-line transition hover:decoration-ink"
+              >
+                Storplan 规划工具
+              </a>
+              与 Systems Performance (2nd Edition) 整理。
             </p>
             <p className="mt-2 text-xs text-mute">学习进度保存在本地浏览器，换设备不同步。</p>
           </div>

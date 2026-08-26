@@ -3,6 +3,7 @@
  * 用 useSyncExternalStore 保证 SSR 时返回稳定的空状态，避免水合不一致。
  */
 import { useSyncExternalStore } from 'react'
+import { RENAMED_TRACKS } from './curriculum'
 
 const STORAGE_KEY = 'storpath:progress:v1'
 
@@ -15,6 +16,15 @@ export interface ProgressState {
 
 const EMPTY: ProgressState = { done: [], quiz: [] }
 
+/** 阶段改名后，老访客的本地进度按前缀迁移一次，不然打开站点会发现全部清零 */
+function migrate(keys: string[]): string[] {
+  return keys.map((key) => {
+    const slash = key.indexOf('/')
+    const renamed = slash > 0 ? RENAMED_TRACKS[key.slice(0, slash)] : undefined
+    return renamed ? renamed + key.slice(slash) : key
+  })
+}
+
 let cache: ProgressState | null = null
 const listeners = new Set<() => void>()
 
@@ -25,8 +35,8 @@ function read(): ProgressState {
     const raw = window.localStorage.getItem(STORAGE_KEY)
     const parsed = raw ? (JSON.parse(raw) as Partial<ProgressState>) : null
     cache = {
-      done: Array.isArray(parsed?.done) ? parsed.done : [],
-      quiz: Array.isArray(parsed?.quiz) ? parsed.quiz : [],
+      done: Array.isArray(parsed?.done) ? migrate(parsed.done) : [],
+      quiz: Array.isArray(parsed?.quiz) ? migrate(parsed.quiz) : [],
     }
   } catch {
     cache = { done: [], quiz: [] }

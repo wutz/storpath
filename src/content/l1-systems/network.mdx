@@ -16,7 +16,7 @@
 
 现在把副本算进去。
 
-> 两个词先垫一下（完整定义见 [CPU 与内存](/learn/l0-systems/cpu-memory) 一节和 [L2 Ceph 架构](/learn/l2-ceph/architecture)）：
+> 两个词先垫一下（完整定义见 [CPU 与内存](/learn/l1-systems/cpu-memory) 一节和 [L2 Ceph 架构](/learn/l2-ceph/architecture)）：
 > **OSD** 是管一块数据盘的进程，一盘一个；**MON** 是维护集群状态的进程，通常 3 个，不在数据路径上。
 > 客户端写数据时，会先落到持有这份数据的**主 OSD**（primary），再由它转发给其它副本所在的 OSD。
 
@@ -130,6 +130,8 @@ ss -tin | head -20
 RDMA 绕过内核协议栈直接读写对端内存，能把延迟从几十微秒降到几微秒，CPU 开销也大幅下降。GPFS ECE、Weka 这类高性能方案普遍依赖它。
 
 代价是**它要求无损网络**：交换机要配 PFC、ECN，配错了会出现死锁式的全网卡顿，排查难度远高于普通 TCP。经验判断：如果团队没有能独立调 PFC/ECN 的网络工程师，先用 100GbE TCP 把业务跑起来，比上 RoCE 更稳妥。
+
+这里先埋个伏笔，L4 有[一整节讲 RDMA、InfiniBand 与 RoCE](/learn/l4-advanced/rdma)，以及[怎么把它接到存储上](/learn/l4-advanced/rdma-storage)。
 </Callout>
 
 <Quiz
@@ -175,4 +177,4 @@ RDMA 绕过内核协议栈直接读写对端内存，能把延迟从几十微秒
 - 前后端分离的核心价值是隔离恢复流量，只有一条网就别假装分离
 - MTU 9000 收益明显，但必须端到端一致，用 `ping -M do` 验证
 - 网络质量看重传率和丢包，0.1% 是警戒线
-- RoCE 性能好但要求团队有能力调无损网络，否则先上 TCP
+- RoCE 性能好但要求团队有能力调无损网络，否则先上 TCP（L4 有专门两节展开）

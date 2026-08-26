@@ -1,6 +1,9 @@
 /**
  * 课程大纲 —— 全站唯一数据源。
- * 技能树、阶段页、课程页、实验索引、进度统计都从这里派生。
+ * 首页、阶段页、课程页、实验索引、进度统计都从这里派生。
+ *
+ * 全站只有一条学习路径，数组顺序就是学习顺序：阶段按 L0→L4 从易到难，
+ * 阶段内的课程也按初学者能跟上的节奏排 —— 改顺序只改这里，别的地方不用动。
  *
  * status: 'ready'   已有正文（src/content/<trackId>/<lessonId>.mdx）
  *         'planned' 仅有大纲，课程页会渲染大纲占位
@@ -63,15 +66,129 @@ export const KIND_STYLE: Record<LessonKind, string> = {
 
 const REF_SYSPERF: LessonRef = { label: 'Systems Performance, 2nd Edition — Brendan Gregg' }
 const REF_STORPLAN: LessonRef = { label: 'Storplan 容量与性能规划', href: 'https://storplan.wutz.dev/' }
+/* 网络本身的深度内容在 Netpath，这边只讲存储用得上的那一层，剩下的往那儿引 */
+const REF_NETPATH: LessonRef = { label: 'Netpath 网络成长路径', href: 'https://netpath.wutz.dev/' }
 const repo = (path: string): LessonRef => ({ label: 'k8s-in-action', path })
 
 export const tracks: Track[] = [
   {
-    id: 'l0-systems',
+    id: 'l0-fundamentals',
     level: 'L0',
+    title: '存储原理',
+    subtitle: '块 / 文件 / 对象与冗余机制',
+    goal: '零基础的第一站。先弄清存储到底是什么、怎么被访问、跑在什么介质上、靠什么做到不丢数据 —— 这套心智模型换任何一款产品都通用。',
+    lessons: [
+      {
+        id: 'three-types',
+        title: '块、文件、对象：三种存储语义',
+        summary: '不是三种产品，是三种访问语义。选错语义，后面怎么调优都别扭。',
+        kind: 'concept',
+        status: 'ready',
+        minutes: 25,
+        objectives: [
+          '用一句话说清三种存储各自暴露给应用的是什么',
+          '给定业务场景，判断应该用块、文件还是对象',
+          '解释为什么对象存储天然易扩展而文件存储难',
+        ],
+        outline: [
+          '块存储：一块裸盘，语义最少，性能最高',
+          '文件存储：目录树与 POSIX 语义，元数据是代价',
+          '对象存储：扁平命名空间与 HTTP 语义',
+          '协议地图：iSCSI / NVMe-oF、NFS / SMB、S3',
+          '选型练习：数据库、AI 训练、备份归档',
+        ],
+        refs: [repo('storage/README.md'), REF_STORPLAN],
+      },
+      {
+        id: 'protocols',
+        title: '存储协议与接入方式',
+        summary: 'iSCSI、NFS、S3、NVMe-oF 各自的开销与坑，接入前先知道。',
+        kind: 'concept',
+        status: 'ready',
+        minutes: 25,
+        objectives: [
+          '为给定业务选择接入协议并说明理由',
+          '排查 NFS 挂载卡死、S3 签名失败一类常见故障',
+          '理解多路径与客户端侧缓存的影响',
+        ],
+        outline: [
+          'iSCSI 与多路径（multipath）',
+          'NFSv3 vs NFSv4：锁与状态',
+          'S3 API 与签名、分段上传',
+          'NVMe-oF：RDMA 与 TCP 两种传输',
+        ],
+        refs: [repo('storage/nfs-csi/'), repo('storage/vast/nfs/')],
+      },
+      {
+        id: 'hardware',
+        title: '硬件基础：从 NAND 到整机选型',
+        summary: '写放大、寿命、掉电保护，这些盘的特性会一路传导到集群指标上。',
+        kind: 'concept',
+        status: 'ready',
+        minutes: 30,
+        objectives: [
+          '解释 SSD 写放大、GC、TRIM 与稳态性能',
+          '看懂 DWPD、TBW 并据此估算盘的寿命',
+          '为存储节点搭配合理的 CPU / 内存 / 盘位 / 网卡',
+        ],
+        outline: [
+          'NAND、FTL、GC 与写放大',
+          'DWPD / TBW 与寿命估算',
+          '掉电保护（PLP）为什么对存储服务是硬要求',
+          '整机配比：每 OSD 多少核多少内存',
+          'HBA / RAID 卡直通模式',
+        ],
+        refs: [REF_STORPLAN],
+      },
+      {
+        id: 'redundancy',
+        title: '副本还是纠删码：冗余机制的取舍',
+        summary: '三副本浪费 67% 空间，EC 省空间但重建时能把集群拖垮。这节课算清这笔账。',
+        kind: 'concept',
+        status: 'ready',
+        minutes: 35,
+        objectives: [
+          '计算任意副本数 / EC 方案的空间效率与故障容忍度',
+          '解释 EC 的读放大、写放大与重建代价',
+          '给出"什么场景用副本、什么场景用 EC"的判断依据',
+        ],
+        outline: [
+          'RAID 回顾：条带、镜像、校验',
+          'N 副本：效率、容忍度与恢复带宽',
+          '纠删码 k+m：空间效率公式与容忍度',
+          '写放大与小 I/O 惩罚：EC 为什么怕小文件',
+          '重建风暴与故障域设计',
+        ],
+        refs: [REF_STORPLAN, repo('storage/gpfs/day-0-plan-ece.md')],
+      },
+      {
+        id: 'consistency',
+        title: '一致性、故障域与可用性',
+        summary: 'CAP 不是屠龙术，它每天都在决定你的集群在断电时丢不丢数据。',
+        kind: 'concept',
+        status: 'ready',
+        minutes: 30,
+        objectives: [
+          '区分强一致、最终一致在运维上的可观察差异',
+          '按机架/电源/交换机划分故障域',
+          '解释 quorum 与脑裂，并说明为什么监控节点要奇数个',
+        ],
+        outline: [
+          '强一致 vs 最终一致：客户端看到什么',
+          'quorum、脑裂与奇数节点',
+          '故障域层级：OSD / 主机 / 机架 / 机房',
+          '可用性预算：MTBF、MTTR 与 SLA',
+        ],
+      },
+    ],
+  },
+
+  {
+    id: 'l1-systems',
+    level: 'L1',
     title: '系统基础',
     subtitle: 'Linux 性能与观测',
-    goal: '存储工程师的地基。看得懂 iostat 的每一列，能用 USE 方法在十分钟内把问题定位到 CPU、内存、磁盘还是网络。',
+    goal: '知道存储是什么之后，再学会读懂机器。看得懂 iostat 的每一列，能用 USE 方法在十分钟内把问题定位到磁盘、内存、CPU 还是网络。',
     lessons: [
       {
         id: 'use-method',
@@ -92,26 +209,6 @@ export const tracks: Track[] = [
           '把方法套到存储节点上',
         ],
         refs: [REF_SYSPERF, repo('os/os.md')],
-      },
-      {
-        id: 'cpu-memory',
-        title: 'CPU 与内存：存储节点的隐形瓶颈',
-        summary: 'OSD 进程吃满 CPU、NUMA 跨节点访问、page cache 被挤掉，都会表现成"磁盘慢"。',
-        kind: 'concept',
-        status: 'ready',
-        minutes: 30,
-        objectives: [
-          '读懂 run queue、上下文切换、软中断对存储进程的影响',
-          '判断一台存储节点是否存在 NUMA 亲和性问题',
-          '解释 page cache、dirty page 回写与 fsync 的关系',
-        ],
-        outline: [
-          'CPU 调度与 run queue：vmstat / mpstat 读法',
-          '软中断与网卡多队列：存储节点的 si 高是什么信号',
-          'NUMA 拓扑、内存带宽与 numactl 绑核',
-          'page cache、dirty ratio 与回写风暴',
-        ],
-        refs: [REF_SYSPERF],
       },
       {
         id: 'disk-io',
@@ -152,6 +249,26 @@ export const tracks: Track[] = [
           '日志文件系统与写放大',
           'XFS vs ext4：格式化与挂载参数实操',
           '小文件问题：为什么元数据比数据更难扛',
+        ],
+        refs: [REF_SYSPERF],
+      },
+      {
+        id: 'cpu-memory',
+        title: 'CPU 与内存：存储节点的隐形瓶颈',
+        summary: 'OSD 进程吃满 CPU、NUMA 跨节点访问、page cache 被挤掉，都会表现成"磁盘慢"。',
+        kind: 'concept',
+        status: 'ready',
+        minutes: 30,
+        objectives: [
+          '读懂 run queue、上下文切换、软中断对存储进程的影响',
+          '判断一台存储节点是否存在 NUMA 亲和性问题',
+          '解释 page cache、dirty page 回写与 fsync 的关系',
+        ],
+        outline: [
+          'CPU 调度与 run queue：vmstat / mpstat 读法',
+          '软中断与网卡多队列：存储节点的 si 高是什么信号',
+          'NUMA 拓扑、内存带宽与 numactl 绑核',
+          'page cache、dirty ratio 与回写风暴',
         ],
         refs: [REF_SYSPERF],
       },
@@ -203,118 +320,6 @@ export const tracks: Track[] = [
   },
 
   {
-    id: 'l1-fundamentals',
-    level: 'L1',
-    title: '存储原理',
-    subtitle: '块 / 文件 / 对象与冗余机制',
-    goal: '建立分布式存储的通用心智模型：数据怎么切、怎么冗余、故障时怎么恢复，换任何一款产品都通用。',
-    lessons: [
-      {
-        id: 'three-types',
-        title: '块、文件、对象：三种存储语义',
-        summary: '不是三种产品，是三种访问语义。选错语义，后面怎么调优都别扭。',
-        kind: 'concept',
-        status: 'ready',
-        minutes: 25,
-        objectives: [
-          '用一句话说清三种存储各自暴露给应用的是什么',
-          '给定业务场景，判断应该用块、文件还是对象',
-          '解释为什么对象存储天然易扩展而文件存储难',
-        ],
-        outline: [
-          '块存储：一块裸盘，语义最少，性能最高',
-          '文件存储：目录树与 POSIX 语义，元数据是代价',
-          '对象存储：扁平命名空间与 HTTP 语义',
-          '协议地图：iSCSI / NVMe-oF、NFS / SMB、S3',
-          '选型练习：数据库、AI 训练、备份归档',
-        ],
-        refs: [repo('storage/README.md'), REF_STORPLAN],
-      },
-      {
-        id: 'redundancy',
-        title: '副本还是纠删码：冗余机制的取舍',
-        summary: '三副本浪费 67% 空间，EC 省空间但重建时能把集群拖垮。这节课算清这笔账。',
-        kind: 'concept',
-        status: 'ready',
-        minutes: 35,
-        objectives: [
-          '计算任意副本数 / EC 方案的空间效率与故障容忍度',
-          '解释 EC 的读放大、写放大与重建代价',
-          '给出"什么场景用副本、什么场景用 EC"的判断依据',
-        ],
-        outline: [
-          'RAID 回顾：条带、镜像、校验',
-          'N 副本：效率、容忍度与恢复带宽',
-          '纠删码 k+m：空间效率公式与容忍度',
-          '写放大与小 I/O 惩罚：EC 为什么怕小文件',
-          '重建风暴与故障域设计',
-        ],
-        refs: [REF_STORPLAN, repo('storage/gpfs/day-0-plan-ece.md')],
-      },
-      {
-        id: 'consistency',
-        title: '一致性、故障域与可用性',
-        summary: 'CAP 不是屠龙术，它每天都在决定你的集群在断电时丢不丢数据。',
-        kind: 'concept',
-        status: 'ready',
-        minutes: 30,
-        objectives: [
-          '区分强一致、最终一致在运维上的可观察差异',
-          '按机架/电源/交换机划分故障域',
-          '解释 quorum 与脑裂，并说明为什么监控节点要奇数个',
-        ],
-        outline: [
-          '强一致 vs 最终一致：客户端看到什么',
-          'quorum、脑裂与奇数节点',
-          '故障域层级：OSD / 主机 / 机架 / 机房',
-          '可用性预算：MTBF、MTTR 与 SLA',
-        ],
-      },
-      {
-        id: 'hardware',
-        title: '硬件基础：从 NAND 到整机选型',
-        summary: '写放大、寿命、掉电保护，这些盘的特性会一路传导到集群指标上。',
-        kind: 'concept',
-        status: 'ready',
-        minutes: 30,
-        objectives: [
-          '解释 SSD 写放大、GC、TRIM 与稳态性能',
-          '看懂 DWPD、TBW 并据此估算盘的寿命',
-          '为存储节点搭配合理的 CPU / 内存 / 盘位 / 网卡',
-        ],
-        outline: [
-          'NAND、FTL、GC 与写放大',
-          'DWPD / TBW 与寿命估算',
-          '掉电保护（PLP）为什么对存储服务是硬要求',
-          '整机配比：每 OSD 多少核多少内存',
-          'HBA / RAID 卡直通模式',
-        ],
-        refs: [REF_STORPLAN],
-      },
-      {
-        id: 'protocols',
-        title: '存储协议与接入方式',
-        summary: 'iSCSI、NFS、S3、NVMe-oF 各自的开销与坑，接入前先知道。',
-        kind: 'concept',
-        status: 'ready',
-        minutes: 25,
-        objectives: [
-          '为给定业务选择接入协议并说明理由',
-          '排查 NFS 挂载卡死、S3 签名失败一类常见故障',
-          '理解多路径与客户端侧缓存的影响',
-        ],
-        outline: [
-          'iSCSI 与多路径（multipath）',
-          'NFSv3 vs NFSv4：锁与状态',
-          'S3 API 与签名、分段上传',
-          'NVMe-oF：RDMA 与 TCP 两种传输',
-        ],
-        refs: [repo('storage/nfs-csi/'), repo('storage/vast/nfs/')],
-      },
-    ],
-  },
-
-  {
     id: 'l2-ceph',
     level: 'L2',
     title: 'Ceph 主战场',
@@ -348,28 +353,6 @@ export const tracks: Track[] = [
         ],
       },
       {
-        id: 'crush-pg',
-        title: 'CRUSH 与 PG：数据到底落在哪块盘上',
-        summary: '没有中心元数据服务，客户端却能算出数据在哪 —— CRUSH 是 Ceph 最漂亮的设计。',
-        kind: 'concept',
-        status: 'ready',
-        minutes: 40,
-        objectives: [
-          '手工推演 object → PG → OSD 的映射过程',
-          '为集群估算合理的 PG 数量',
-          '读懂 CRUSH map 与 rule，按机架划分故障域',
-        ],
-        outline: [
-          '为什么不用元数据表：CRUSH 的动机',
-          'object → PG：哈希取模',
-          'PG → OSD：CRUSH 算法与 map',
-          'PG 数量怎么定，pg_autoscaler 做了什么',
-          'PG 状态机：active+clean 之外的那些状态',
-          'CRUSH rule 实操：按机架分布副本',
-        ],
-        refs: [repo('storage/cephadm/2-ceph-rados.md')],
-      },
-      {
         id: 'deploy-cephadm',
         title: '实验：用 cephadm 从零部署一套集群',
         summary: '三节点起步，走完 bootstrap、加主机、加 OSD、看健康状态的全流程。',
@@ -392,25 +375,26 @@ export const tracks: Track[] = [
         refs: [repo('storage/cephadm/1-deploy-ceph-cluster.md')],
       },
       {
-        id: 'deploy-rook',
-        title: '实验：Rook 在 K8s 里跑 Ceph',
-        summary: '存储与计算同集群的另一条路线，Operator 帮你做了什么、藏了什么。',
-        kind: 'lab',
+        id: 'crush-pg',
+        title: 'CRUSH 与 PG：数据到底落在哪块盘上',
+        summary: '没有中心元数据服务，客户端却能算出数据在哪 —— CRUSH 是 Ceph 最漂亮的设计。',
+        kind: 'concept',
         status: 'ready',
-        minutes: 60,
+        minutes: 40,
         objectives: [
-          '用 Rook Operator 部署一套 CephCluster',
-          '用 kubectl rook-ceph 执行日常运维命令',
-          '判断什么场景该选 Rook、什么场景该选 cephadm',
+          '手工推演 object → PG → OSD 的映射过程',
+          '为集群估算合理的 PG 数量',
+          '读懂 CRUSH map 与 rule，按机架划分故障域',
         ],
         outline: [
-          'Operator 模式与 CephCluster CRD',
-          '节点打标与存储节点选择',
-          'public / cluster 双网配置',
-          'toolbox 与 kubectl-rook-ceph 插件',
-          'OSD prepare 失败的排查路径',
+          '为什么不用元数据表：CRUSH 的动机',
+          'object → PG：哈希取模',
+          'PG → OSD：CRUSH 算法与 map',
+          'PG 数量怎么定，pg_autoscaler 做了什么',
+          'PG 状态机：active+clean 之外的那些状态',
+          'CRUSH rule 实操：按机架分布副本',
         ],
-        refs: [repo('storage/rook/README.md'), repo('storage/rook/day-2.md')],
+        refs: [repo('storage/cephadm/2-ceph-rados.md')],
       },
       {
         id: 'rbd',
@@ -497,6 +481,27 @@ export const tracks: Track[] = [
           '容量水位管理：near full 与 full ratio',
         ],
         refs: [repo('storage/cephadm/day-2.md'), repo('storage/rook/day-2.md')],
+      },
+      {
+        id: 'deploy-rook',
+        title: '实验：Rook 在 K8s 里跑 Ceph',
+        summary: '存储与计算同集群的另一条路线，Operator 帮你做了什么、藏了什么。',
+        kind: 'lab',
+        status: 'ready',
+        minutes: 60,
+        objectives: [
+          '用 Rook Operator 部署一套 CephCluster',
+          '用 kubectl rook-ceph 执行日常运维命令',
+          '判断什么场景该选 Rook、什么场景该选 cephadm',
+        ],
+        outline: [
+          'Operator 模式与 CephCluster CRD',
+          '节点打标与存储节点选择',
+          'public / cluster 双网配置',
+          'toolbox 与 kubectl-rook-ceph 插件',
+          'OSD prepare 失败的排查路径',
+        ],
+        refs: [repo('storage/rook/README.md'), repo('storage/rook/day-2.md')],
       },
       {
         id: 'troubleshoot-quest',
@@ -695,9 +700,60 @@ export const tracks: Track[] = [
     id: 'l4-advanced',
     level: 'L4',
     title: '进阶方向',
-    subtitle: 'GPFS ECE、K8s 与商业存储',
-    goal: '走出 Ceph 的舒适区。企业级高性能场景里，GPFS、Weka、VastData 和 K8s CSI 才是常态。',
+    subtitle: 'RDMA 网络、GPFS ECE、K8s 与商业存储',
+    goal: '走出 Ceph 的舒适区。企业级高性能场景里，RDMA 网络、GPFS、Weka、VastData 和 K8s CSI 才是常态。',
     lessons: [
+      {
+        id: 'rdma',
+        title: 'RDMA、InfiniBand 与 RoCE：高性能存储的入场券',
+        summary: 'GPFS ECE、Weka、NVMe-oF 都跑在 RDMA 上。先弄懂它凭什么快，以及它对网络提了什么条件。',
+        kind: 'concept',
+        status: 'ready',
+        minutes: 40,
+        objectives: [
+          '说清内核旁路与零拷贝为什么能同时降延迟和降 CPU',
+          '区分 InfiniBand 与 RoCEv2 两条路线各自的代价',
+          '解释无损网络为什么要 PFC + ECN，以及 PFC 配错会有多糟',
+          '用 ibstat / ib_write_bw 判断一条 RDMA 链路是否真的可用',
+        ],
+        outline: [
+          '存储为什么绕不开 RDMA：一次 I/O 里内核吃掉了多少',
+          'verbs 语义：双边的 SEND/RECV 与单边的 READ/WRITE',
+          'InfiniBand：独立网络、子网管理器与天生无损',
+          'RoCEv2：跑在以太网上，无损要自己造',
+          'PFC、ECN 与 DCQCN：三个机制各管什么',
+          '选型判断：什么时候该上，什么时候先用 TCP',
+          '链路验收：ibstat、ibv_devinfo、ib_write_bw、pause 帧计数',
+        ],
+        refs: [REF_NETPATH, repo('storage/gpfs/day-0-network.md'), repo('network/')],
+      },
+      {
+        id: 'rdma-storage',
+        title: '实验：把 RDMA 接到存储上',
+        summary: 'GPFS verbsRdma、NVMe-oF over RDMA、GPUDirect Storage —— 三条落地路径与各自的验收方法。',
+        kind: 'lab',
+        status: 'ready',
+        minutes: 45,
+        objectives: [
+          '给 GPFS 打开 verbsRdma 并确认它真的走了 RDMA 而不是悄悄回落 TCP',
+          '搭起一条 NVMe-oF over RDMA 的链路并对比 TCP 传输的差别',
+          '说清 GPUDirect Storage 省掉的是哪一次拷贝，以及它的前置条件',
+          '设计一组能证明「RDMA 确实生效了」的对比测试',
+        ],
+        outline: [
+          '开关在哪：GPFS verbsRdma、verbsPorts 与 mmfsadm test verbs status',
+          '回落陷阱：配置写了 RDMA，实际跑的却是 TCP',
+          'NVMe-oF：RDMA 与 TCP 两种 transport 的搭建与对比',
+          'Ceph over RDMA 的现状，以及为什么生产上通常不碰',
+          'GPUDirect Storage：让 GPU 绕过主机内存直读数据',
+          '验收：延迟、CPU 占用、带宽三条线一起看',
+        ],
+        refs: [
+          REF_NETPATH,
+          repo('storage/gpfs/day-1-tunning.md'),
+          repo('storage/elbencho/'),
+        ],
+      },
       {
         id: 'gpfs-concept',
         title: 'GPFS / Storage Scale 概念与 ECE 架构',
@@ -922,6 +978,15 @@ export function getFlatNeighbors(trackId: string, lessonId: string) {
 
 export function lessonKey(trackId: string, lessonId: string) {
   return `${trackId}/${lessonId}`
+}
+
+/**
+ * 阶段改名：存储原理提到 L0、系统基础顺延为 L1 之后 trackId 跟着变了。
+ * 老链接和老进度都按这张表迁移，不然收藏夹里的地址会直接 404。
+ */
+export const RENAMED_TRACKS: Record<string, string> = {
+  'l0-systems': 'l1-systems',
+  'l1-fundamentals': 'l0-fundamentals',
 }
 
 export const stats = {

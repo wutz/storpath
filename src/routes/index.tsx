@@ -1,236 +1,163 @@
 import type { ReactNode } from 'react'
 import { Link, createFileRoute } from '@tanstack/react-router'
-import { KIND_LABEL, KIND_STYLE, LEVEL_CHIP, lessonKey, stats, tracks } from '#/lib/curriculum'
-import { type PathItem, type RolePath, getRole, rolePath, roles } from '#/lib/roles'
+import {
+  KIND_LABEL,
+  KIND_STYLE,
+  allLessons,
+  lessonKey,
+  stats,
+  tracks,
+} from '#/lib/curriculum'
 import { useProgress } from '#/lib/progress'
 
 export const Route = createFileRoute('/')({
-  validateSearch: (search: Record<string, unknown>): { role?: string } => {
-    const role = typeof search.role === 'string' ? search.role : undefined
-    return getRole(role) ? { role } : {}
-  },
   component: Home,
 })
 
-function Home() {
-  const { role: roleParam } = Route.useSearch()
-  const path = rolePath(roleParam) ?? rolePath(roles[0].id)!
+/** 五个阶段各自解决什么问题 —— 说清「为什么是这个顺序」 */
+const STAGE_HINT: Record<string, string> = {
+  'l0-fundamentals': '不用碰任何命令行。先把存储的语言学会，后面每一节都建立在这几个词上。',
+  'l1-systems': '存储跑在机器上。学会读机器给你的信号，才谈得上判断「到底慢在哪」。',
+  'l2-ceph': '先把集群跑起来，再回头讲原理，最后用四关排障把手感练出来。',
+  'l3-planning': '开始算账。把业务需求翻译成机器数量、盘型号和网络配置。',
+  'l4-advanced': '走出 Ceph 的舒适区，把散落的知识收口成可交接的流程。',
+}
 
+function Home() {
   const progress = useProgress()
   const doneSet = new Set(progress.done)
+
+  const doneCount = allLessons.filter(({ track, lesson }) =>
+    doneSet.has(lessonKey(track.id, lesson.id)),
+  ).length
+  const percent = Math.round((doneCount / stats.lessonCount) * 100)
+
+  const nextAt = allLessons.findIndex(
+    ({ track, lesson }) => !doneSet.has(lessonKey(track.id, lesson.id)),
+  )
+  const next = nextAt === -1 ? undefined : allLessons[nextAt]
 
   return (
     <div className="space-y-10">
       <section>
-        <div className="eyebrow">{stats.lessonCount} lessons · 5 levels · 3 tracks</div>
-        <h1 className="display-2xl mt-3">选一条路线。</h1>
+        <div className="eyebrow">
+          {stats.lessonCount} lessons · {stats.trackCount} stages ·{' '}
+          {Math.round(stats.totalMinutes / 60)} hours
+        </div>
+        <h1 className="display-2xl mt-3">从零开始，一条路走到底。</h1>
         <p className="mt-4 max-w-2xl text-[17px] leading-relaxed text-body">
-          {stats.lessonCount} 节课不必都学。挑一个和你当前岗位最近的身份，
-          下面会给出裁剪过的清单 —— 只留这个岗位真正会用到的课，并切成几段推进。
-          想看全貌就切到「存储运维工程师」，那条是不做裁剪的完整主线。
+          没有分岔，也不用挑。{stats.lessonCount} 节课按「先懂原理、再读机器、然后上手集群、接着学会算账、
+          最后走进企业级战场」排成一条线，从完全不懂存储开始，一节一节往下走就行。
         </p>
       </section>
 
-      <section>
-        <div className="grid gap-2 sm:grid-cols-3">
-          {roles.map((role) => {
-            const active = role.id === path.role.id
-            return (
-              <Link
-                key={role.id}
-                to="/"
-                search={{ role: role.id }}
-                /* 选中态用左侧一道品牌色竖条挑明，光靠白底和阴影在窄屏上分不出来 */
-                className={`rounded-md border-l-2 px-4 py-3 text-left transition ${
-                  active
-                    ? 'border-brand-600 bg-canvas shadow-soft'
-                    : 'border-transparent bg-soft-2 text-body hover:bg-canvas hover:shadow-card'
-                }`}
-              >
-                <div className={`text-sm font-medium ${active ? 'text-ink' : 'text-body'}`}>
-                  {role.title}
-                </div>
-                <div className="mt-0.5 font-mono text-[11px] text-mute">{role.alias}</div>
-              </Link>
-            )
-          })}
+      <section className="rounded-lg bg-canvas px-5 py-5 shadow-soft sm:px-6 sm:py-6">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+          <h2 className="display-md">
+            {doneCount === 0 ? '从第一节开始' : next ? '接着上次往下走' : '全部走完了 🎉'}
+          </h2>
+          <span className="font-mono text-xs text-mute">
+            已完成 {doneCount}/{stats.lessonCount}
+          </span>
         </div>
 
-        <PathSummary path={path} doneSet={doneSet} />
+        <div className="mt-4 flex items-center gap-3">
+          <div className="h-1 flex-1 overflow-hidden rounded-full bg-soft-2">
+            <div
+              className="h-full rounded-full bg-brand-600 transition-all"
+              style={{ width: `${percent}%` }}
+            />
+          </div>
+          <span className="font-mono text-[11px] text-mute">{percent}%</span>
+        </div>
+
+        {next && (
+          <Link
+            to="/learn/$trackId/$lessonId"
+            params={{ trackId: next.track.id, lessonId: next.lesson.id }}
+            className="mt-5 inline-flex items-center rounded-sm bg-brand-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700"
+          >
+            {doneCount > 0 ? '继续' : '开始学'} · 第 {nextAt + 1} 节 {next.lesson.title}
+          </Link>
+        )}
       </section>
 
-      {path.role.layout === 'catalog' ? (
-        <CatalogView doneSet={doneSet} />
-      ) : (
-        <StagesView path={path} doneSet={doneSet} />
-      )}
-    </div>
-  )
-}
+      <section className="space-y-4">
+        {tracks.map((track, stageIndex) => {
+          const trackDone = track.lessons.filter((lesson) =>
+            doneSet.has(lessonKey(track.id, lesson.id)),
+          ).length
 
-/** 路线简介卡：诉求一句话 + 规模 + 裁剪说明 + 产出 + 进度 + 入口 */
-function PathSummary({ path, doneSet }: { path: RolePath; doneSet: Set<string> }) {
-  const { role, items, lessonCount, minutes } = path
-  const doneCount = items.filter((item) => doneSet.has(item.key)).length
-  const percent = lessonCount > 0 ? Math.round((doneCount / lessonCount) * 100) : 0
-  const nextUp = items.find((item) => !doneSet.has(item.key)) ?? items[0]
-
-  return (
-    <div className="mt-3 rounded-lg bg-canvas px-5 py-5 shadow-soft sm:px-6 sm:py-6">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
-        <h2 className="display-md">{role.tagline}</h2>
-        <span className="font-mono text-xs text-mute">
-          {lessonCount} 节 · 约 {Math.round(minutes / 60)} 小时 · 已完成 {doneCount}/{lessonCount}
-        </span>
-      </div>
-      <p className="mt-2 max-w-2xl text-sm leading-relaxed text-body">{role.desc}</p>
-
-      <ul className="mt-4 grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
-        {role.outcomes.map((outcome) => (
-          <li key={outcome} className="flex gap-2 text-sm leading-relaxed text-body">
-            <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-line-strong" />
-            <span>{outcome}</span>
-          </li>
-        ))}
-      </ul>
-
-      <div className="mt-5 flex items-center gap-3">
-        <div className="h-1 flex-1 overflow-hidden rounded-full bg-soft-2">
-          <div
-            className="h-full rounded-full bg-brand-600 transition-all"
-            style={{ width: `${percent}%` }}
-          />
-        </div>
-        <span className="font-mono text-[11px] text-mute">{percent}%</span>
-      </div>
-
-      {nextUp && (
-        <Link
-          to="/learn/$trackId/$lessonId"
-          params={{ trackId: nextUp.track.id, lessonId: nextUp.lesson.id }}
-          search={{ role: role.id }}
-          className="mt-5 inline-flex items-center rounded-sm bg-brand-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700"
-        >
-          {doneCount > 0 ? '继续这条路线' : '沿这条路线开始'} · 第 {nextUp.index} 节{' '}
-          {nextUp.lesson.title}
-        </Link>
-      )}
-    </div>
-  )
-}
-
-/** 裁剪过的路线：按段列课，序号是整条路线的连续序号 */
-function StagesView({ path, doneSet }: { path: RolePath; doneSet: Set<string> }) {
-  return (
-    <section className="space-y-8">
-      {path.stages.map(({ stage, items, minutes }, index) => (
-        <div key={stage.title}>
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
-            <span className="eyebrow">Stage {index + 1}</span>
-            <h3 className="display-sm">{stage.title}</h3>
-            <span className="font-mono text-[11px] text-mute">
-              {items.length} 节 · {minutes} 分钟
-            </span>
-          </div>
-          <p className="mt-1 text-sm leading-relaxed text-body">{stage.hint}</p>
-          <ol className="mt-3 divide-y divide-line overflow-hidden rounded-md bg-canvas shadow-card">
-            {items.map((item) => (
-              <li key={item.key}>
-                <LessonRow item={item} roleId={path.role.id} done={doneSet.has(item.key)} />
-              </li>
-            ))}
-          </ol>
-        </div>
-      ))}
-      <p className="text-sm leading-relaxed text-mute">
-        岗位路线是挑着学的，没排进这条线的课不会消失 —— 切到「存储运维工程师」就是按 L0–L4 通读的
-        全部 {stats.lessonCount} 节。三条路线共用同一份进度。
-      </p>
-    </section>
-  )
-}
-
-/** 完整主线：按 L0–L4 阶段通读 */
-function CatalogView({ doneSet }: { doneSet: Set<string> }) {
-  return (
-    <section className="space-y-4">
-      {tracks.map((track) => {
-        const trackDone = track.lessons.filter((lesson) =>
-          doneSet.has(lessonKey(track.id, lesson.id)),
-        ).length
-
-        return (
-          <article key={track.id} className="overflow-hidden rounded-md bg-canvas shadow-card">
-            <header className="flex items-start gap-3 border-b border-line bg-soft px-4 py-3.5 sm:px-5">
-              <span className="mt-0.5 shrink-0 rounded-xs bg-canvas px-2 py-1 font-mono text-xs text-ink shadow-hair">
-                {track.level}
-              </span>
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-baseline gap-x-2">
-                  <Link
-                    to="/tracks/$trackId"
-                    params={{ trackId: track.id }}
-                    className="text-[15px] font-semibold tracking-[-0.02em] hover:underline"
-                  >
-                    {track.title}
-                  </Link>
-                  <span className="font-mono text-[11px] text-mute">{track.subtitle}</span>
+          return (
+            <article key={track.id} className="overflow-hidden rounded-md bg-canvas shadow-card">
+              <header className="border-b border-line bg-soft px-4 py-3.5 sm:px-5">
+                <div className="flex items-start gap-3">
+                  <span className="mt-0.5 shrink-0 rounded-xs bg-canvas px-2 py-1 font-mono text-xs text-ink shadow-hair">
+                    {track.level}
+                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-baseline gap-x-2">
+                      <span className="eyebrow">第 {stageIndex + 1} 步</span>
+                      <Link
+                        to="/tracks/$trackId"
+                        params={{ trackId: track.id }}
+                        className="text-[15px] font-semibold tracking-[-0.02em] hover:underline"
+                      >
+                        {track.title}
+                      </Link>
+                      <span className="font-mono text-[11px] text-mute">{track.subtitle}</span>
+                    </div>
+                    <p className="mt-1 text-xs leading-relaxed text-body">
+                      {STAGE_HINT[track.id] ?? track.goal}
+                    </p>
+                  </div>
+                  <span className="shrink-0 font-mono text-xs text-mute">
+                    {trackDone}/{track.lessons.length}
+                  </span>
                 </div>
-                <p className="mt-1 text-xs leading-relaxed text-body">{track.goal}</p>
-              </div>
-              <span className="shrink-0 font-mono text-xs text-mute">
-                {trackDone}/{track.lessons.length}
-              </span>
-            </header>
+              </header>
 
-            <ol className="divide-y divide-line">
-              {track.lessons.map((lesson, index) => {
-                const key = lessonKey(track.id, lesson.id)
-                const done = doneSet.has(key)
-                return (
-                  <li key={lesson.id}>
-                    <Link
-                      to="/learn/$trackId/$lessonId"
-                      params={{ trackId: track.id, lessonId: lesson.id }}
-                      search={{ role: 'storage-ops' }}
-                      className="flex items-center gap-3 px-4 py-3 transition hover:bg-soft sm:px-5"
-                    >
-                      <Marker done={done}>{index + 1}</Marker>
-                      <span className="min-w-0 flex-1">
-                        <span className="block truncate text-sm text-ink">{lesson.title}</span>
-                        <span className="block truncate text-xs text-mute">{lesson.summary}</span>
-                      </span>
-                      <KindBadge kind={lesson.kind} />
-                      <span className="shrink-0 font-mono text-[11px] text-mute">
-                        {lesson.minutes}m
-                      </span>
-                    </Link>
-                  </li>
-                )
-              })}
-            </ol>
-          </article>
-        )
-      })}
-    </section>
-  )
-}
+              <ol className="divide-y divide-line">
+                {track.lessons.map((lesson, index) => {
+                  const key = lessonKey(track.id, lesson.id)
+                  return (
+                    <li key={lesson.id}>
+                      <Link
+                        to="/learn/$trackId/$lessonId"
+                        params={{ trackId: track.id, lessonId: lesson.id }}
+                        className="flex items-center gap-3 px-4 py-3 transition hover:bg-soft sm:px-5"
+                      >
+                        <Marker done={doneSet.has(key)}>{index + 1}</Marker>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm text-ink">{lesson.title}</span>
+                          <span className="block truncate text-xs text-mute">{lesson.summary}</span>
+                        </span>
+                        <KindBadge kind={lesson.kind} />
+                        <span className="shrink-0 font-mono text-[11px] text-mute">
+                          {lesson.minutes}m
+                        </span>
+                      </Link>
+                    </li>
+                  )
+                })}
+              </ol>
+            </article>
+          )
+        })}
 
-function LessonRow({ item, roleId, done }: { item: PathItem; roleId: string; done: boolean }) {
-  const { track, lesson } = item
-  return (
-    <Link
-      to="/learn/$trackId/$lessonId"
-      params={{ trackId: track.id, lessonId: lesson.id }}
-      search={{ role: roleId }}
-      className="flex items-center gap-3 px-4 py-2.5 transition hover:bg-soft sm:px-5"
-    >
-      <Marker done={done}>{item.index}</Marker>
-      <span className={LEVEL_CHIP}>{track.level}</span>
-      <span className="min-w-0 flex-1 truncate text-sm text-ink">{lesson.title}</span>
-      <KindBadge kind={lesson.kind} />
-      <span className="shrink-0 font-mono text-[11px] text-mute">{lesson.minutes}m</span>
-    </Link>
+        <p className="text-sm leading-relaxed text-mute">
+          顺序是建议不是限制 —— 已经有底子的话，直接跳到对应阶段也行。
+          想先动手，
+          <Link
+            to="/labs"
+            className="text-ink underline decoration-line underline-offset-4 transition hover:decoration-ink"
+          >
+            实验与闯关
+          </Link>
+          把全部动手环节单独汇总在了一起。
+        </p>
+      </section>
+    </div>
   )
 }
 

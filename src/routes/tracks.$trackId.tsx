@@ -1,8 +1,14 @@
-import { Link, createFileRoute } from '@tanstack/react-router'
-import { KIND_LABEL, KIND_STYLE, getTrack, lessonKey } from '#/lib/curriculum'
+import { Link, createFileRoute, redirect } from '@tanstack/react-router'
+import { KIND_LABEL, KIND_STYLE, RENAMED_TRACKS, getTrack, lessonKey } from '#/lib/curriculum'
 import { useProgress } from '#/lib/progress'
 
 export const Route = createFileRoute('/tracks/$trackId')({
+  beforeLoad: ({ params }) => {
+    const renamed = RENAMED_TRACKS[params.trackId]
+    if (renamed) {
+      throw redirect({ to: '/tracks/$trackId', params: { trackId: renamed }, replace: true })
+    }
+  },
   component: TrackPage,
 })
 

@@ -11,7 +11,7 @@ export const Route = createRootRoute({
       {
         name: 'description',
         content:
-          '面向初学者的存储在线交互式学习项目：一条循序渐进的完整路径，从存储原理与 Linux 系统基础起步，走过 Ceph 三种存储、容量与性能规划，直到 GPFS ECE、K8s CSI 与商业存储。',
+          '存储运维工程师的成长路线：一条循序渐进的完整学习路径，从存储原理与 Linux 系统基础起步，走过 Ceph 三种存储、容量与性能规划，直到 RDMA 网络、GPFS ECE、K8s CSI 与商业存储。',
       },
     ],
     links: [
@@ -83,17 +83,7 @@ function RootLayout() {
           <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
             <div className="eyebrow">Storpath</div>
             <p className="mt-3 max-w-3xl text-sm leading-relaxed text-body">
-              存储成长路径，面向初学者的一条完整学习主线，从存储原理一路走到企业级高性能存储。内容基于
-              k8s-in-action 部署手册、
-              <a
-                href="https://storplan.wutz.dev/"
-                target="_blank"
-                rel="noreferrer"
-                className="text-ink underline underline-offset-4 decoration-line transition hover:decoration-ink"
-              >
-                Storplan 规划工具
-              </a>
-              与 Systems Performance (2nd Edition) 整理。
+              存储运维工程师的成长路线，从看懂一块盘到扛住一套集群。
             </p>
             <p className="mt-2 text-xs text-mute">学习进度保存在本地浏览器，换设备不同步。</p>
           </div>

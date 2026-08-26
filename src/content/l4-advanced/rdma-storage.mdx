@@ -1,0 +1,235 @@
+## 三条落地路径
+
+上一节讲了 RDMA 凭什么快。这一节是把它真正接到存储上，以及 —— 更重要的 —— **怎么证明它确实生效了**。
+
+存储侧用得上 RDMA 的地方主要是三处：
+
+```
+GPFS verbsRdma         文件系统的客户端 ↔ 服务端流量走 RDMA
+NVMe-oF over RDMA      把远端 NVMe 盘映射成本地块设备
+GPUDirect Storage      让 GPU 绕过主机内存，直接从存储读进显存
+```
+
+三条路径互相独立，可以只上其中一条。下面挨个走一遍。
+
+## GPFS：打开 verbsRdma
+
+GPFS 的 RDMA 支持很成熟，是 ECE 部署里的标配。前置条件是装好 Mellanox OFED（[部署那一节](/learn/l4-advanced/gpfs-deploy)第 6 步）。
+
+```bash
+# 1. 先确认卡和端口（上一节的验收手法）
+ibstat | grep -E 'CA |State|Rate'
+ibdev2netdev
+
+# 2. 打开 RDMA，并指定用哪些端口
+#    格式 device/port，多个端口用空格分隔
+mmchconfig verbsRdma=enable
+mmchconfig verbsPorts="mlx5_0/1 mlx5_1/1"
+
+# 3. 重启守护进程才生效
+mmshutdown -a && mmstartup -a
+
+# 4. 确认配置生效值（不是配置文件里写了什么）
+mmdiag --config | grep -i verbs
+```
+
+关键一步是**确认它真的连上了**：
+
+```bash
+# RDMA 总开关状态
+mmfsadm test verbs status
+
+# 逐个对端的 RDMA 连接状态 —— 这条才是关键
+mmfsadm test verbs conn
+
+# 网络层面的统计
+mmdiag --network
+```
+
+`mmfsadm test verbs conn` 应该列出每个对端节点以及对应的 RDMA 连接。**如果某个节点不在列表里，它就是在走 TCP。**
+
+<Callout type="trap" title="回落 TCP 是无声的">
+这是 RDMA 存储最常见、也最容易被忽略的问题：**配置写了 RDMA，实际跑的是 TCP，而且系统不会报错。**
+
+GPFS 在 RDMA 建连失败时会自动回落到 TCP —— 这个设计是对的（保可用），但意味着你只会看到「性能没达到预期」，看不到任何错误。典型触发原因：
+
+- `verbsPorts` 写错了设备名或端口号（`mlx5_0/1` 写成 `mlx5_0/2`）
+- 部分节点的 OFED 版本不一致，或者压根没装
+- 无损网络配置不完整，建连超时
+- 防火墙拦了建连阶段的流量
+
+排查只有一条路：**每次改完配置都跑一遍 `mmfsadm test verbs conn`，逐个核对节点数量对不对**。日志里搜 `VERBS RDMA` 也能看到 open/closed 的记录。
+
+把这条写进部署检查清单，比事后从性能数字倒查省太多时间。
+</Callout>
+
+另外两个相关参数：
+
+| 参数 | 作用 |
+| --- | --- |
+| `verbsRdmaSend` | 让控制类小消息也走 RDMA，默认关。节点多时打开有收益 |
+| `pagepool` | RDMA 注册的就是这块内存，**上一节说的 MR 在这里落地** |
+
+`pagepool` 改大对 RDMA 场景收益明显，但它是**独占的物理内存**，容量规划时必须算进去，别调完直接 OOM。
+
+## NVMe-oF：两种 transport 摆一起比
+
+NVMe-oF 把 NVMe 协议搬到网络上，远端盘在本地看起来就是一个 `/dev/nvmeXnY`。它支持 RDMA 和 TCP 两种 transport，正好用来做对比实验。
+
+目标端（导出盘的那台）用 `nvmetcli` 配置，这里只看客户端侧：
+
+```bash
+# 装工具
+dnf install -y nvme-cli
+
+# 发现目标端提供了什么
+nvme discover -t rdma -a 10.68.20.10 -s 4420
+nvme discover -t tcp  -a 10.68.20.10 -s 4420
+
+# 分别连上（注意 -t 后面的 transport）
+nvme connect -t rdma -a 10.68.20.10 -s 4420 -n nqn.2024-01.dev.wutz:target1
+nvme connect -t tcp  -a 10.68.20.10 -s 4420 -n nqn.2024-01.dev.wutz:target1
+
+# 看连上了什么
+nvme list
+nvme list-subsys          # 确认走的是哪种 transport
+
+# 断开
+nvme disconnect -n nqn.2024-01.dev.wutz:target1
+```
+
+对比测试用同一块盘、同一个压测参数，只换 transport：
+
+```bash
+# 4K 随机读延迟 —— 这是 RDMA 优势最明显的场景
+elbencho -b 4K -t 16 --iodepth 32 -r --direct /dev/nvme1n1
+
+# 同时开一个窗口看 CPU
+mpstat -P ALL 1
+```
+
+预期差别（100GbE 环境的典型量级）：
+
+```
+                   TCP          RDMA
+4K 随机读延迟      ~90 µs       ~25 µs
+达到线速时 CPU     8~12 核      1~2 核
+大块顺序带宽       接近线速      接近线速   ← 差别不大
+```
+
+**注意最后一行**：大块顺序传输时两者差别很小，因为那是带宽受限，协议栈开销被摊薄了。RDMA 的价值集中在**小 I/O 的延迟和 CPU 占用**上 —— 这也是判断「值不值得上」的依据。
+
+## Ceph over RDMA：知道就行，别碰
+
+Ceph 的 async messenger 有 RDMA 后端，配置项是 `ms_type = async+rdma`。
+
+现状：**长期处于实验状态，社区主流部署一律走 TCP**，文档不全、版本升级容易踩坑、出问题社区帮不上忙。收益也有限 —— Ceph 的延迟大头在 OSD 侧的处理路径和 BlueStore，不在网络栈。
+
+结论很干脆：生产 Ceph 集群不要用 RDMA。想要低延迟就换方案（GPFS / Weka / VastData），而不是给 Ceph 换网络栈。
+
+## GPUDirect Storage：省掉哪一次拷贝
+
+AI 训练场景才会碰到这个。普通路径下，数据从存储到 GPU 要过一次主机内存：
+
+```
+存储 → 网卡 → 主机内存（bounce buffer） → PCIe → GPU 显存
+                    ↑ 多一次拷贝，还占 CPU 和内存带宽
+```
+
+GPUDirect Storage（GDS）让网卡直接 DMA 到 GPU 显存：
+
+```
+存储 → 网卡 →（PCIe P2P）→ GPU 显存
+```
+
+前置条件比较硬：
+
+- NVIDIA 数据中心 GPU + `nvidia-fs` 内核模块 + CUDA 的 cuFile API
+- 网卡和 GPU **最好挂在同一个 PCIe switch 下**（跨 NUMA 会大幅折损收益，参见 [CPU 与内存](/learn/l1-systems/cpu-memory)）
+- 文件系统要支持：GPFS、Weka、VastData 支持，CephFS 不支持
+- 应用要用 cuFile 接口读写 —— **改代码，不是改配置**
+
+```bash
+# 检查环境是否就绪
+/usr/local/cuda/gds/tools/gdscheck -p
+
+# 关注输出里的
+#   GDS release version / nvidia_fs version
+#   各文件系统的 Supported 状态
+#   IOMMU: should be disabled  ← 常见的拦路项
+```
+
+<Callout type="note" title="存储运维在 GDS 这件事上的角色">
+GDS 的开关在应用侧（要用 cuFile 写代码），存储运维负责的是**把条件准备好并证明它可用**：文件系统选型支持 GDS、RDMA 链路正常、GPU 与网卡的 PCIe 拓扑合理、IOMMU 状态正确。
+
+被问到「我们的存储支持 GPUDirect 吗」时，答案不是查一份产品手册，而是跑一次 `gdscheck -p` 给出证据。
+</Callout>
+
+## 验收：三条线一起看
+
+RDMA 生效与否，不能只看带宽 —— 上面的对比表已经说明大块顺序传输根本看不出差别。有效的验收是三条线一起看：
+
+| 看什么 | 怎么测 | 生效的样子 |
+| --- | --- | --- |
+| **延迟** | `ib_write_lat` / 4K 随机读 | 个位数微秒 / 延迟降到 TCP 的 1/3 左右 |
+| **CPU** | 压满带宽时 `mpstat -P ALL 1` | 从 8~12 核降到 1~2 核，`%soft` 明显下降 |
+| **带宽** | `elbencho` 大块顺序 | 达到线速 90%（但 TCP 也能做到，参考值而非判据） |
+
+<Callout type="tip" title="最有说服力的一次测试">
+同一套硬件、同一个压测命令，只切换 transport 跑两遍，把三个数并排贴出来。
+
+这比任何厂商 PPT 都有说服力，也是把「上不上 RDMA」这个决策从口水仗变成算术题的唯一办法。做完记得把结果写进部署文档 —— 下次扩容选型时，这组数字就是依据。
+</Callout>
+
+<Quiz
+  id="rdmas-1"
+  question="给 GPFS 配好 verbsRdma 后，性能没有明显提升，也没有任何报错。最先该做什么？"
+  options={[
+    { text: '跑 mmfsadm test verbs conn，逐个核对对端节点是否都建立了 RDMA 连接', correct: true },
+    { text: '直接调大 pagepool', feedback: 'pagepool 对 RDMA 场景确实有收益，但在确认 RDMA 是否生效之前调它是在猜。' },
+    { text: '重装 OFED', feedback: '代价大且盲目。先确认哪些节点没连上，再针对性排查。' },
+    { text: '认为 RDMA 对这个负载没用，回退配置', feedback: '在确认它真的跑起来之前，得不出这个结论。' },
+  ]}
+  explain={<>
+    GPFS 在 RDMA 建连失败时会静默回落 TCP —— 保可用是对的，但意味着「没提升也没报错」正是回落的典型症状。
+    <code>mmfsadm test verbs conn</code> 列出的对端数量对不上，就是证据。
+  </>}
+/>
+
+<Quiz
+  id="rdmas-2"
+  question="对比 NVMe-oF 的 RDMA 与 TCP 两种 transport，哪个指标最能体现 RDMA 的价值？"
+  options={[
+    { text: '4K 随机读的延迟，以及压满带宽时的 CPU 占用', correct: true },
+    { text: '大块顺序读的带宽', feedback: '大块顺序传输是带宽受限的，协议栈开销被摊薄，两者差别很小——拿它做判据会得出「RDMA 没用」的错误结论。' },
+    { text: '磁盘容量', feedback: '与 transport 无关。' },
+    { text: '连接建立的耗时', feedback: '建连是一次性开销，不影响稳态性能。' },
+  ]}
+  explain={<>
+    RDMA 省掉的是每次 I/O 的固定开销（上下文切换、内存拷贝、协议栈处理）。
+    这部分开销在小 I/O 上占比极高、在大块传输里可以忽略，所以判据必须落在<strong>小 I/O 延迟</strong>和 <strong>CPU 占用</strong>上。
+  </>}
+/>
+
+<Quiz
+  id="rdmas-3"
+  question="关于 GPUDirect Storage，下面哪些说法是对的？（多选）"
+  options={[
+    { text: '它省掉的是数据经过主机内存 bounce buffer 的那次拷贝', correct: true },
+    { text: '应用需要用 cuFile 接口读写，不是改个配置就能生效', correct: true },
+    { text: '文件系统必须支持，GPFS/Weka/VastData 支持而 CephFS 不支持', correct: true },
+    { text: '只要装了 NVIDIA GPU 就能自动生效', feedback: '需要 nvidia-fs 模块、支持的文件系统、合理的 PCIe 拓扑，以及应用侧改用 cuFile。' },
+  ]}
+  explain={<>存储运维在这件事上的职责是把条件准备好并给出证据 —— 跑 <code>gdscheck -p</code>，而不是查产品手册。</>}
+/>
+
+## 这节课的落点
+
+- 存储侧的三条 RDMA 落地路径：GPFS verbsRdma、NVMe-oF over RDMA、GPUDirect Storage
+- GPFS 开 RDMA：`verbsRdma=enable` + `verbsPorts`，**重启守护进程后必须跑 `mmfsadm test verbs conn` 核对**
+- **静默回落 TCP 是头号坑** —— 不报错、只是慢，把核对写进部署检查清单
+- `pagepool` 就是 RDMA 注册的那块内存，调大有收益但要算进容量规划
+- NVMe-oF 是做 RDMA / TCP 对比实验的最佳载体，同盘同参数只换 transport
+- Ceph over RDMA 长期实验状态，生产不要碰；要低延迟就换方案而不是换网络栈
+- GDS 省掉主机内存那次拷贝，但要求 nvidia-fs、支持的文件系统、合理 PCIe 拓扑和应用改用 cuFile
+- 验收看三条线：**小 I/O 延迟、CPU 占用、带宽**，其中带宽只是参考值，不是判据

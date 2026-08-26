@@ -66,6 +66,8 @@ export const KIND_STYLE: Record<LessonKind, string> = {
 
 const REF_SYSPERF: LessonRef = { label: 'Systems Performance, 2nd Edition — Brendan Gregg' }
 const REF_STORPLAN: LessonRef = { label: 'Storplan 容量与性能规划', href: 'https://storplan.wutz.dev/' }
+/* 网络本身的深度内容在 Netpath，这边只讲存储用得上的那一层，剩下的往那儿引 */
+const REF_NETPATH: LessonRef = { label: 'Netpath 网络成长路径', href: 'https://netpath.wutz.dev/' }
 const repo = (path: string): LessonRef => ({ label: 'k8s-in-action', path })
 
 export const tracks: Track[] = [
@@ -698,9 +700,60 @@ export const tracks: Track[] = [
     id: 'l4-advanced',
     level: 'L4',
     title: '进阶方向',
-    subtitle: 'GPFS ECE、K8s 与商业存储',
-    goal: '走出 Ceph 的舒适区。企业级高性能场景里，GPFS、Weka、VastData 和 K8s CSI 才是常态。',
+    subtitle: 'RDMA 网络、GPFS ECE、K8s 与商业存储',
+    goal: '走出 Ceph 的舒适区。企业级高性能场景里，RDMA 网络、GPFS、Weka、VastData 和 K8s CSI 才是常态。',
     lessons: [
+      {
+        id: 'rdma',
+        title: 'RDMA、InfiniBand 与 RoCE：高性能存储的入场券',
+        summary: 'GPFS ECE、Weka、NVMe-oF 都跑在 RDMA 上。先弄懂它凭什么快，以及它对网络提了什么条件。',
+        kind: 'concept',
+        status: 'ready',
+        minutes: 40,
+        objectives: [
+          '说清内核旁路与零拷贝为什么能同时降延迟和降 CPU',
+          '区分 InfiniBand 与 RoCEv2 两条路线各自的代价',
+          '解释无损网络为什么要 PFC + ECN，以及 PFC 配错会有多糟',
+          '用 ibstat / ib_write_bw 判断一条 RDMA 链路是否真的可用',
+        ],
+        outline: [
+          '存储为什么绕不开 RDMA：一次 I/O 里内核吃掉了多少',
+          'verbs 语义：双边的 SEND/RECV 与单边的 READ/WRITE',
+          'InfiniBand：独立网络、子网管理器与天生无损',
+          'RoCEv2：跑在以太网上，无损要自己造',
+          'PFC、ECN 与 DCQCN：三个机制各管什么',
+          '选型判断：什么时候该上，什么时候先用 TCP',
+          '链路验收：ibstat、ibv_devinfo、ib_write_bw、pause 帧计数',
+        ],
+        refs: [REF_NETPATH, repo('storage/gpfs/day-0-network.md'), repo('network/')],
+      },
+      {
+        id: 'rdma-storage',
+        title: '实验：把 RDMA 接到存储上',
+        summary: 'GPFS verbsRdma、NVMe-oF over RDMA、GPUDirect Storage —— 三条落地路径与各自的验收方法。',
+        kind: 'lab',
+        status: 'ready',
+        minutes: 45,
+        objectives: [
+          '给 GPFS 打开 verbsRdma 并确认它真的走了 RDMA 而不是悄悄回落 TCP',
+          '搭起一条 NVMe-oF over RDMA 的链路并对比 TCP 传输的差别',
+          '说清 GPUDirect Storage 省掉的是哪一次拷贝，以及它的前置条件',
+          '设计一组能证明「RDMA 确实生效了」的对比测试',
+        ],
+        outline: [
+          '开关在哪：GPFS verbsRdma、verbsPorts 与 mmfsadm test verbs status',
+          '回落陷阱：配置写了 RDMA，实际跑的却是 TCP',
+          'NVMe-oF：RDMA 与 TCP 两种 transport 的搭建与对比',
+          'Ceph over RDMA 的现状，以及为什么生产上通常不碰',
+          'GPUDirect Storage：让 GPU 绕过主机内存直读数据',
+          '验收：延迟、CPU 占用、带宽三条线一起看',
+        ],
+        refs: [
+          REF_NETPATH,
+          repo('storage/gpfs/day-1-tunning.md'),
+          repo('storage/elbencho/'),
+        ],
+      },
       {
         id: 'gpfs-concept',
         title: 'GPFS / Storage Scale 概念与 ECE 架构',

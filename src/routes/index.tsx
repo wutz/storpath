@@ -44,10 +44,11 @@ function Home() {
           {stats.lessonCount} lessons · {stats.trackCount} stages ·{' '}
           {Math.round(stats.totalMinutes / 60)} hours
         </div>
-        <h1 className="display-2xl mt-3">从零开始，一条路走到底。</h1>
+        <h1 className="display-2xl mt-3">从看懂一块盘，到扛住一套集群。</h1>
         <p className="mt-4 max-w-2xl text-[17px] leading-relaxed text-body">
-          没有分岔，也不用挑。{stats.lessonCount} 节课按「先懂原理、再读机器、然后上手集群、接着学会算账、
-          最后走进企业级战场」排成一条线，从完全不懂存储开始，一节一节往下走就行。
+          这是一条存储运维工程师的成长路线。{stats.lessonCount} 节课排成一条线：
+          先弄懂存储在说什么，再学会读机器给的信号，然后亲手把集群跑起来、扛住它出的每一次故障，
+          最后能替业务算账、把方案和 SOP 交出去。没有分岔，也不用挑，从第一节往下走就行。
         </p>
       </section>
 

@@ -3,7 +3,11 @@
  * 首页、阶段页、课程页、实验索引、进度统计都从这里派生。
  *
  * 全站只有一条学习路径，数组顺序就是学习顺序：阶段按 L0→L4 从易到难，
- * 阶段内的课程也按初学者能跟上的节奏排 —— 改顺序只改这里，别的地方不用动。
+ * 阶段内按「先概念、再实践、最后原理」排 —— 先讲清这东西是什么、能干什么，
+ * 再让人动手把它跑起来用熟，最后才回头拆它内部凭什么这么转。
+ * 典型例子是 L2：架构总览 → 部署与三种存储实操 → Day-2 与闯关 → 最后才讲 CRUSH/PG，
+ * 而不是一上来就把最烧脑的映射算法糊在初学者脸上。
+ * 改顺序只改这里，别的地方不用动。
  *
  * status: 'ready'   已有正文（src/content/<trackId>/<lessonId>.mdx）
  *         'planned' 仅有大纲，课程页会渲染大纲占位
@@ -324,7 +328,7 @@ export const tracks: Track[] = [
     level: 'L2',
     title: 'Ceph 主战场',
     subtitle: '一套集群，三种存储',
-    goal: '这是分布式存储运维的核心战场。从架构原理到部署、日常运维、故障排查，形成完整闭环。',
+    goal: '这是分布式存储运维的核心战场。先看懂架构，再动手部署、跑通三种存储、扛住 Day-2 与故障，最后回过头把 CRUSH 与 PG 的原理啃下来。',
     lessons: [
       {
         id: 'architecture',
@@ -375,26 +379,25 @@ export const tracks: Track[] = [
         refs: [repo('storage/cephadm/1-deploy-ceph-cluster.md')],
       },
       {
-        id: 'crush-pg',
-        title: 'CRUSH 与 PG：数据到底落在哪块盘上',
-        summary: '没有中心元数据服务，客户端却能算出数据在哪 —— CRUSH 是 Ceph 最漂亮的设计。',
-        kind: 'concept',
+        id: 'deploy-rook',
+        title: '实验：Rook 在 K8s 里跑 Ceph',
+        summary: '存储与计算同集群的另一条路线，Operator 帮你做了什么、藏了什么。',
+        kind: 'lab',
         status: 'ready',
-        minutes: 40,
+        minutes: 60,
         objectives: [
-          '手工推演 object → PG → OSD 的映射过程',
-          '为集群估算合理的 PG 数量',
-          '读懂 CRUSH map 与 rule，按机架划分故障域',
+          '用 Rook Operator 部署一套 CephCluster',
+          '用 kubectl rook-ceph 执行日常运维命令',
+          '判断什么场景该选 Rook、什么场景该选 cephadm',
         ],
         outline: [
-          '为什么不用元数据表：CRUSH 的动机',
-          'object → PG：哈希取模',
-          'PG → OSD：CRUSH 算法与 map',
-          'PG 数量怎么定，pg_autoscaler 做了什么',
-          'PG 状态机：active+clean 之外的那些状态',
-          'CRUSH rule 实操：按机架分布副本',
+          'Operator 模式与 CephCluster CRD',
+          '节点打标与存储节点选择',
+          'public / cluster 双网配置',
+          'toolbox 与 kubectl-rook-ceph 插件',
+          'OSD prepare 失败的排查路径',
         ],
-        refs: [repo('storage/cephadm/2-ceph-rados.md')],
+        refs: [repo('storage/rook/README.md'), repo('storage/rook/day-2.md')],
       },
       {
         id: 'rbd',
@@ -481,27 +484,6 @@ export const tracks: Track[] = [
           '容量水位管理：near full 与 full ratio',
         ],
         refs: [repo('storage/cephadm/day-2.md'), repo('storage/rook/day-2.md')],
-      },
-      {
-        id: 'deploy-rook',
-        title: '实验：Rook 在 K8s 里跑 Ceph',
-        summary: '存储与计算同集群的另一条路线，Operator 帮你做了什么、藏了什么。',
-        kind: 'lab',
-        status: 'ready',
-        minutes: 60,
-        objectives: [
-          '用 Rook Operator 部署一套 CephCluster',
-          '用 kubectl rook-ceph 执行日常运维命令',
-          '判断什么场景该选 Rook、什么场景该选 cephadm',
-        ],
-        outline: [
-          'Operator 模式与 CephCluster CRD',
-          '节点打标与存储节点选择',
-          'public / cluster 双网配置',
-          'toolbox 与 kubectl-rook-ceph 插件',
-          'OSD prepare 失败的排查路径',
-        ],
-        refs: [repo('storage/rook/README.md'), repo('storage/rook/day-2.md')],
       },
       {
         id: 'troubleshoot-quest',
@@ -599,6 +581,28 @@ export const tracks: Track[] = [
           '调优的记录与回滚纪律',
         ],
         refs: [repo('storage/elbencho/'), repo('storage/cephadm/8-metrics.md')],
+      },
+      {
+        id: 'crush-pg',
+        title: 'CRUSH 与 PG：数据到底落在哪块盘上',
+        summary: '前面一路把集群用熟了，这节回头看它凭什么这么转 —— CRUSH 是 Ceph 最漂亮的设计。',
+        kind: 'concept',
+        status: 'ready',
+        minutes: 40,
+        objectives: [
+          '手工推演 object → PG → OSD 的映射过程',
+          '为集群估算合理的 PG 数量',
+          '读懂 CRUSH map 与 rule，按机架划分故障域',
+        ],
+        outline: [
+          '为什么不用元数据表：CRUSH 的动机',
+          'object → PG：哈希取模',
+          'PG → OSD：CRUSH 算法与 map',
+          'PG 数量怎么定，pg_autoscaler 做了什么',
+          'PG 状态机：active+clean 之外的那些状态',
+          'CRUSH rule 实操：按机架分布副本',
+        ],
+        refs: [repo('storage/cephadm/2-ceph-rados.md')],
       },
     ],
   },

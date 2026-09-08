@@ -57,7 +57,7 @@ function TrackPage() {
             {track.lessons.length} 节课 · 约 {Math.round(totalMinutes / 60)} 小时
           </span>
           <span>
-            已完成 {doneCount}/{track.lessons.length}
+            已完成 {doneCount}/{track.lessons.length} 节
           </span>
         </div>
       </header>

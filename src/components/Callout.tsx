@@ -14,7 +14,7 @@ const TONE: Record<Tone, { label: string; rule: string; head: string; icon: stri
     icon: 'i',
   },
   tip: {
-    label: '实践建议',
+    label: '实战建议',
     rule: 'bg-info',
     head: 'text-info-deep',
     icon: '✓',
@@ -26,7 +26,7 @@ const TONE: Record<Tone, { label: string; rule: string; head: string; icon: stri
     icon: '!',
   },
   trap: {
-    label: '新人常踩的坑',
+    label: '常见误区',
     rule: 'bg-danger',
     head: 'text-danger-deep',
     icon: '×',

@@ -41,24 +41,24 @@ function Home() {
     <div className="space-y-10">
       <section>
         <div className="eyebrow">
-          {stats.lessonCount} lessons · {stats.trackCount} stages ·{' '}
-          {Math.round(stats.totalMinutes / 60)} hours
+          {stats.lessonCount} 节课程 · {stats.trackCount} 个阶段 ·{' '}
+          约 {Math.round(stats.totalMinutes / 60)} 小时
         </div>
         <h1 className="display-2xl mt-3">从看懂一块盘，到扛住一套集群。</h1>
         <p className="mt-4 max-w-2xl text-[17px] leading-relaxed text-body">
-          这是一条存储运维工程师的成长路线。{stats.lessonCount} 节课排成一条线：
-          先弄懂存储在说什么，再学会读机器给的信号，然后亲手把集群跑起来、扛住它出的每一次故障，
-          最后能替业务算账、把方案和 SOP 交出去。没有分岔，也不用挑，从第一节往下走就行。
+          这是一条面向存储运维工程师的成长路线。{stats.lessonCount} 节课程循序展开：
+          先理解存储的基本概念，再学会读懂机器发出的信号；随后亲手搭建集群、处理真实故障，
+          最后把业务需求转化为容量与性能方案，并沉淀成可交付的 SOP。无需选择分支，从第一节开始即可。
         </p>
       </section>
 
       <section className="rounded-lg bg-canvas px-5 py-5 shadow-soft sm:px-6 sm:py-6">
         <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
           <h2 className="display-md">
-            {doneCount === 0 ? '从第一节开始' : next ? '接着上次往下走' : '全部走完了 🎉'}
+            {doneCount === 0 ? '从第一节开始' : next ? '继续上次的学习' : '已完成全部课程 🎉'}
           </h2>
           <span className="font-mono text-xs text-mute">
-            已完成 {doneCount}/{stats.lessonCount}
+            已完成 {doneCount}/{stats.lessonCount} 节
           </span>
         </div>
 
@@ -78,7 +78,7 @@ function Home() {
             params={{ trackId: next.track.id, lessonId: next.lesson.id }}
             className="mt-5 inline-flex items-center rounded-sm bg-brand-600 px-4 py-2.5 text-sm font-medium text-white transition hover:bg-brand-700"
           >
-            {doneCount > 0 ? '继续' : '开始学'} · 第 {nextAt + 1} 节 {next.lesson.title}
+            {doneCount > 0 ? '继续学习' : '开始学习'} · 第 {nextAt + 1} 节：{next.lesson.title}
           </Link>
         )}
       </section>
@@ -98,7 +98,7 @@ function Home() {
                   </span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-baseline gap-x-2">
-                      <span className="eyebrow">第 {stageIndex + 1} 步</span>
+                      <span className="eyebrow">阶段 {stageIndex + 1}</span>
                       <Link
                         to="/tracks/$trackId"
                         params={{ trackId: track.id }}

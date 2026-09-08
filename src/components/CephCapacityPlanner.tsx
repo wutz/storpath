@@ -102,7 +102,7 @@ export function CephCapacityPlanner() {
               onChange={(e) => set('reserveNodeFailure', e.target.checked)}
               className="h-4 w-4 accent-brand-600"
             />
-            预留一个节点的容量用于故障自愈
+            留一个节点的容量，坏一台也能自愈
           </label>
         </div>
 
@@ -112,7 +112,7 @@ export function CephCapacityPlanner() {
             value={formatTiB(result.usableTiB)}
             note={
               <>
-                端到端效率 {formatPercent(result.overallEfficiency)} · 每 1 TiB 可用需采购{' '}
+                端到端效率 {formatPercent(result.overallEfficiency)} · 每 1 TiB 可用要买{' '}
                 {result.tbPerUsableTiB.toFixed(2)} TB 裸盘
               </>
             }

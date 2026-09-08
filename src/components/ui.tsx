@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-/** 表单控件基准：6px 圆角 + hairline 描边，聚焦时才亮出品牌色 */
+/** 所有输入框都走这套：6px 圆角 + hairline 描边，聚焦才亮品牌色 */
 export const inputCls =
   'w-full rounded-sm border border-line bg-canvas px-3 py-2 text-sm text-ink outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-100'
 
@@ -22,7 +22,7 @@ export function Field({
   )
 }
 
-/** 课文里嵌的交互面板统一外壳：白卡 + hairline 分隔的标题条 */
+/** 课文里嵌的交互面板都套这个壳：白卡 + hairline 标题条 */
 export function Panel({
   eyebrow,
   title,
@@ -54,7 +54,7 @@ export function Panel({
   )
 }
 
-/** 数字结论块：一个大数 + 一行注解，全站只有这里允许出现超大字号 */
+/** 数字结论块：一个大数配一行注解。全站只有这里能用超大字号 */
 export function Stat({
   label,
   value,
@@ -81,7 +81,7 @@ export function Stat({
   )
 }
 
-/** 提示清单：算出来的警告、口径说明都走这里 */
+/** 提示清单：算出来的警告、口径说明都往这儿塞 */
 export function NoteList({ items, tone = 'note' }: { items: string[]; tone?: 'note' | 'warn' }) {
   return (
     <ul

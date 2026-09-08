@@ -4,18 +4,18 @@
 
 > 所有虚拟机都读写不了了，存储好像整个没了。
 
-你登上 `ceph-node1` 敲 `ceph -s`，**命令卡在那里，什么都不返回**。
+你登上 `ceph-node1` 敲 `ceph -s`，命令卡在那里，什么都不返回。
 
-这一关和上一关不同：上一关你至少还能用 `ceph` 命令。这一关连管理入口都没了。
+上一关你至少还能用 `ceph` 命令，这一关连管理入口都没了。
 
 <Callout type="warn" title="ceph 命令卡住意味着什么">
 `ceph` 命令的第一步是连 MON 拉取集群 map。它卡住不返回，只有三种可能：
 
-1. **MON 失去 quorum** —— 没有 MON 能给你一个权威答案
-2. **网络不通** —— 连不上任何一个 MON
-3. **本地配置/keyring 问题** —— 连错了地方
+1. **MON 失去 quorum**：没有 MON 能给你一个权威答案
+2. **网络不通**：连不上任何一个 MON
+3. **本地配置/keyring 问题**：连错了地方
 
-先别慌着重启任何东西。**MON 是集群状态的唯一权威，处理不当会让情况变得更糟。**
+先别慌着重启任何东西。MON 是集群状态的唯一权威，处理不当会让情况变得更糟。
 </Callout>
 
 <Terminal
@@ -66,7 +66,7 @@ tmpfs                 252G     0  252G   0% /dev/shm`,
 8.0K    /var/lib/ceph/mon/ceph-ceph-node1/kv_backend
 
 # store.db 是 MON 的 RocksDB，正常应该只有几百 MB 到几 GB。
-# 468G 说明它长期没有被压缩过 —— 通常发生在集群长时间不健康时。`,
+# 468G 说明它长期没有被压缩过，通常发生在集群长时间不健康时。`,
     },
     {
       cmd: 'ssh ceph-node2 systemctl status ceph-mon@ceph-node2',
@@ -119,7 +119,7 @@ Aug 11 09:48:31 ceph-node1 ceph-mon[41233]: mon.ceph-node1 e3 cluster HEALTH_WAR
 
 ## 复盘
 
-**结论**：`ceph-node1` 与 `ceph-node2` 的 `/var/lib/ceph` 分区被 MON 的 RocksDB（`store.db`）写满，两个 MON 进程反复崩溃退出，3 个 MON 只剩 1 个，quorum（需要 2 个）无法维持，整个集群管理面与数据面均不可用。
+**结论**：`ceph-node1` 与 `ceph-node2` 的 `/var/lib/ceph` 分区被 MON 的 RocksDB（`store.db`）写满，两个 MON 进程反复崩溃退出。3 个 MON 只剩 1 个，凑不齐 quorum（需要 2 个），整个集群的管理面和数据面一起没了。
 
 **根因链**：
 
@@ -151,14 +151,14 @@ ceph tell mon.ceph-node3 compact
 # 4. 把另一个 MON 也拉起来
 systemctl start ceph-mon@ceph-node2
 
-# 5. 最后处理最初的根因 —— 那块坏盘
+# 5. 最后处理最初的根因：那块坏盘
 ceph health detail
 ```
 
 <Callout type="trap" title="三个绝对不能做的操作">
-1. **不要删 `store.db` 里的文件** —— 那是集群状态的唯一副本，删了这个 MON 就废了
-2. **不要用 `mon remove` 删掉挂掉的 MON 试图"凑齐" quorum** —— quorum 的分母会跟着变，可能把情况变得更复杂，且删除操作本身也需要 quorum
-3. **不要同时重装多个 MON** —— 先救活一个恢复 quorum，是所有后续操作的前提
+1. **不要删 `store.db` 里的文件**：那是集群状态的唯一副本，删了这个 MON 就废了
+2. **不要用 `mon remove` 删掉挂掉的 MON 试图"凑齐" quorum**：quorum 的分母会跟着变，情况只会更复杂，而且这个删除操作本身也要 quorum
+3. **不要同时重装多个 MON**：先救活一个恢复 quorum，是所有后续操作的前提
 
 MON 相关的操作里，"少动、按顺序动"永远比"快速尝试"更安全。
 </Callout>
@@ -167,7 +167,7 @@ MON 相关的操作里，"少动、按顺序动"永远比"快速尝试"更安全
 故障发生在 03:47，但根因是**三天前那块没被处理的坏盘**。
 
 集群长期处于 HEALTH_WARN 会带来一系列连锁反应，MON 的 store.db 不压缩只是其中之一。
-"HEALTH_WARN 又不影响业务，先放着吧"——这个念头是很多重大事故的起点。
+"HEALTH_WARN 又不影响业务，先放着吧"，这个念头是很多重大事故的起点。
 </Callout>
 
 <Quiz
@@ -196,7 +196,7 @@ MON 相关的操作里，"少动、按顺序动"永远比"快速尝试"更安全
   ]}
   explain={<>
     集群不健康时，MON 需要保留更多历史 map 以支持恢复，因此不做压缩。
-    这就是为什么 HEALTH_WARN 不能长期挂着——它会通过这条隐蔽的路径演变成集群级事故。
+    HEALTH_WARN 不能长期挂着。它会通过这条隐蔽的路径演变成集群级事故。
   </>}
 />
 
@@ -210,15 +210,15 @@ MON 相关的操作里，"少动、按顺序动"永远比"快速尝试"更安全
     { text: '重装整个集群', feedback: '数据都还在，完全没必要。' },
   ]}
   explain={<>
-    关键是「先恢复 quorum」——没有 quorum，几乎所有 ceph 命令（包括 compact）都用不了。
+    关键是「先恢复 quorum」。没有 quorum，几乎所有 ceph 命令（包括 compact）都用不了。
     腾空间要从日志等无关数据下手，绝不能碰 store.db。
   </>}
 />
 
-## 这一关的落点
+## MON 被自己的 store.db 撑爆之后，先救哪一个？
 
-- `ceph` 命令卡住 = MON quorum 有问题，立刻切换到系统层工具排查
-- MON 在集群不健康时不压缩 store.db，长期 HEALTH_WARN 会把 mon_data 撑爆
-- 恢复顺序：腾空间 → 起一个 MON 恢复 quorum → compact → 起其余 MON → 治根因
-- 绝不能删 `store.db`、绝不能靠 `mon remove` 凑 quorum
-- 给 `/var/lib/ceph` 单独分区并做容量监控，是这类事故的预防手段
+- `ceph` 命令卡住，就是 MON quorum 出事了，别再敲 ceph，直接换系统层工具
+- MON 在集群不健康时不压缩 store.db，HEALTH_WARN 挂久了 mon_data 迟早被撑爆
+- 恢复按这个顺序来：腾空间 → 起一个 MON 恢复 quorum → compact → 起其余 MON → 治根因
+- 不能删 `store.db`，也别指望用 `mon remove` 凑 quorum
+- 给 `/var/lib/ceph` 单独分区、做容量监控，这类事故基本能提前发现

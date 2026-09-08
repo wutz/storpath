@@ -1,6 +1,6 @@
 ## 容器时代的存储接口层
 
-容器里的文件是临时的：容器崩溃或重启，容器内创建和修改的文件就消失了。K8s 用 Volume 解决这个问题，并把它分成两大类。
+容器里的文件是临时的。容器一崩溃或者重启，里面创建、改过的文件就没了。K8s 用 Volume 处理这件事，Volume 本身分两大类。
 
 ```
 Volume
@@ -16,7 +16,7 @@ Volume
 
 ## PV / PVC / SC：三者的职责边界
 
-理解这三者最好的方式是看**谁创建它、谁使用它**：
+这三者的边界，看谁创建它、谁使用它就够了：
 
 | 对象 | 谁创建 | 代表什么 |
 | --- | --- | --- |
@@ -24,7 +24,7 @@ Volume
 | **PVC** | 应用开发者 | "我要一块 20G 的存储，用 xxx 类型" |
 | **StorageClass** | 管理员 | 创建 PV 的模板：用哪个驱动、什么参数 |
 
-手动创建和管理大量 PV 非常繁琐，所以有了 **动态供应（Dynamic Provisioning）**：管理员只定义 StorageClass，用户创建 PVC 时 K8s 自动调用驱动创建对应的 PV 并绑定。
+手动创建和管理大量 PV 太笨了，于是有了动态供应（Dynamic Provisioning）。管理员只定义 StorageClass，用户创建 PVC 时，K8s 自动调用驱动把对应的 PV 建出来并绑上。
 
 ```
 管理员视角                          用户视角
@@ -48,11 +48,11 @@ Volume
 | ReadWriteOncePod | RWOP | 单 Pod 读写 | 较新特性，比 RWO 更严格 |
 
 <Callout type="trap" title="RWO 不是「只能一个 Pod 用」">
-RWO 的准确含义是**单节点**读写。同一个节点上的多个 Pod 是可以共享一个 RWO 卷的（因为挂载点在节点上）。
+RWO 的准确含义是**单节点**读写。同一个节点上的多个 Pod 完全可以共享一个 RWO 卷，因为挂载点就在节点上。
 
-这经常导致一类困惑：本地测试时两个 Pod 恰好调度到同一节点，共享 RWO 卷工作正常；上生产后 Pod 分散到不同节点，就开始报 `Multi-Attach error`。
+很多人在这里翻车：本地测试两个 Pod 恰好调度到同一节点，共享 RWO 卷一切正常；上了生产 Pod 一分散到不同节点，就开始报 `Multi-Attach error`。
 
-要严格限制单 Pod 使用，用 `ReadWriteOncePod`。要真正多节点共享，必须用支持 RWX 的文件存储。
+真需要限制到单 Pod，用 `ReadWriteOncePod`。要跨节点共享，必须上支持 RWX 的文件存储。
 </Callout>
 
 ## 回收策略与卷绑定模式
@@ -66,16 +66,16 @@ volumeBindingMode: Immediate            # PVC 创建后立刻创建并绑定 PV
 ```
 
 <Callout type="warn" title="生产环境的重要数据用 Retain">
-`Delete` 是默认值，也是最方便的——但它意味着**误删一个 PVC 就直接销毁了后端数据**，没有回收站。
+`Delete` 是默认值，也确实省事，代价是误删一个 PVC 就直接销毁后端数据，没有回收站。
 
-重要数据的 StorageClass 应该配 `Retain`：PVC 删除后 PV 变成 `Released` 状态，数据还在，确认无误后再手工删除。多花的一步操作，换来的是一次误删事故的兜底。
+重要数据的 StorageClass 该配 `Retain`。PVC 删除后 PV 变成 `Released` 状态，数据还躺在那里，确认无误再手工删。多花一步操作，换来一次误删事故的兜底。
 
-`WaitForFirstConsumer` 则用于本地存储或拓扑相关的存储：不知道 Pod 会调度到哪个节点前就创建 PV，可能创建在错误的可用区/节点上导致 Pod 无法调度。
+`WaitForFirstConsumer` 用在本地存储或者跟拓扑相关的存储上。还没确定 Pod 会调度到哪个节点就把 PV 建出来，很可能建在错误的可用区或节点上，Pod 反而调度不上去。
 </Callout>
 
 ## CSI 架构
 
-CSI（Container Storage Interface）是标准化接口，把第三方存储和 K8s 解耦。一个 CSI 驱动通常包含两部分：
+CSI（Container Storage Interface）是个标准化接口，把第三方存储和 K8s 解耦。一个 CSI 驱动通常分两部分：
 
 ```
 controller（Deployment，通常 2 副本）
@@ -90,7 +90,7 @@ node（DaemonSet，每个节点一个）
   └─ CSI driver 本体        ← 执行实际的 mount/umount
 ```
 
-排障时的关键认知：**创建卷的问题看 controller，挂载卷的问题看 node**。
+排障记住一条：**创建卷的问题看 controller，挂载卷的问题看 node**。
 
 ```bash
 # 卷创建不出来（PVC Pending）→ 看 provisioner
@@ -169,7 +169,7 @@ allowVolumeExpansion: true`,
         caps osd = "profile rbd pool=kube"
 
 # 注意：osd 的 caps 限定的是 pool=kube
-# 但 StorageClass 里写的 pool 是 rbd —— 权限与目标池不匹配`,
+# 但 StorageClass 里写的 pool 是 rbd，权限与目标池不匹配`,
     },
     {
       cmd: 'kubectl logs deploy/csi-rbdplugin-provisioner -c csi-provisioner --tail=5',
@@ -192,12 +192,12 @@ app-7d9f8b6c4-x2k    0/1     ContainerCreating   0          10m`,
   data:
     pgs: 673 active+clean
 
-# 集群本身完全健康 —— 说明问题不在存储侧，在接入配置上`,
+# 集群本身完全健康，说明问题不在存储侧，在接入配置上`,
     },
   ]}
 />
 
-**结论**：`client.kubernetes` 的 OSD 权限被限定在 `pool=kube`，而 StorageClass 里指定的池是 `rbd`。修复方式是二者对齐：
+`client.kubernetes` 的 OSD 权限被限定在 `pool=kube`，而 StorageClass 里指定的池是 `rbd`。把这两边对齐就行：
 
 ```bash
 # 方式一：放开用户权限到正确的池
@@ -211,7 +211,7 @@ ceph auth caps client.kubernetes \
 
 ## PVC Pending 排查清单
 
-按顺序走，绝大多数问题在前三步就能定位：
+按这个顺序走，绝大多数问题前三步就能定位。
 
 | 检查项 | 命令 | 常见原因 |
 | --- | --- | --- |
@@ -234,8 +234,8 @@ ceph auth caps client.kubernetes \
     { text: '会自动降级成 ReadWriteOnce', feedback: 'K8s 不会自动改你的声明。' },
   ]}
   explain={<>
-    这类问题在测试环境常常「看起来正常」——因为两个 Pod 恰好被调度到同一节点。
-    上生产后 Pod 分散就出事。需要真正共享，必须用 CephFS / GPFS / NFS 这类支持 RWX 的文件存储。
+    这类问题在测试环境常常「看起来正常」，因为两个 Pod 恰好被调度到同一节点。
+    上生产后 Pod 一分散就出事。真要共享，得用 CephFS / GPFS / NFS 这类支持 RWX 的文件存储。
   </>}
 />
 
@@ -250,7 +250,7 @@ ceph auth caps client.kubernetes \
   ]}
   explain={<>
     Permission denied 的两个常见来源：secret 里的 key/userID 不对，或用户的 caps 限定的池与 StorageClass 里的 pool 不一致。
-    演练里就是后者——这是接入 ceph-csi 时最高频的配置错误。
+    演练里就是后者，这也是接入 ceph-csi 时最高频的配置错误。
   </>}
 />
 
@@ -263,14 +263,14 @@ ceph auth caps client.kubernetes \
     { text: '不配，用默认值就行', feedback: '默认值是 Delete。' },
     { text: 'Recycle', feedback: 'Recycle 已被废弃。' },
   ]}
-  explain={<>Retain 让 PV 在 PVC 删除后进入 Released 状态，数据仍在。多一步手工确认，换一次误删事故的兜底——这个交换非常划算。</>}
+  explain={<>Retain 让 PV 在 PVC 删除后进入 Released 状态，数据仍在。多一步手工确认，换一次误删事故的兜底，这个交换划算。</>}
 />
 
-## 这节课的落点
+## 上线前先把 PVC 这几个坑绕开
 
-- PV 是实物、PVC 是申请、SC 是模板；动态供应把管理员从手工建 PV 中解放出来
-- RWO 是**单节点**而非单 Pod，跨节点共享必须用支持 RWX 的文件存储
-- 重要数据用 `reclaimPolicy: Retain`
-- CSI 分 controller（创建卷）和 node（挂载卷）两部分，按症状选择看哪边的日志
-- PVC Pending 的排查顺序：describe 事件 → SC → provisioner 日志 → secret → 后端
-- `Permission denied` 通常是 caps 限定的池与 SC 的 pool 不一致
+- PV 是实物、PVC 是申请、SC 是模板；动态供应省掉了手工建 PV 那一摊
+- RWO 管的是**单节点**，不是单 Pod；跨节点共享得上支持 RWX 的文件存储
+- 重要数据一律 `reclaimPolicy: Retain`
+- CSI 拆成 controller 和 node 两块，创建卷看 controller，挂载看 node
+- PVC 一直 Pending，按 describe 事件 → SC → provisioner 日志 → secret → 后端这个顺序摸
+- `Permission denied` 多半是 caps 限定的池跟 SC 的 pool 对不上

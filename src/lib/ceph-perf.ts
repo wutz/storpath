@@ -1,12 +1,12 @@
 /**
  * Ceph 集群性能估算（教学口径）。
  *
- * 思路：分别算出盘、cluster 网、public 网三条线的上限，取最小值，
- * 再乘一个经验折扣。目的是回答「瓶颈在哪」，而不是给出精确承诺值。
+ * 盘、cluster 网、public 网三条线各算一个上限，最小的那条再打个经验折扣。
+ * 只回答「瓶颈在哪」，不当精确值用。
  *
  * 写放大：
- *   N 副本   → 一次客户端写产生 N 次盘写，其中 N-1 份走 cluster 网
- *   EC k+m   → 一次客户端写产生 (k+m)/k 倍盘写，其中 (k+m-1)/k 走 cluster 网
+ *   N 副本   → 客户端写一次，盘写 N 份，其中 N-1 份走 cluster 网
+ *   EC k+m   → 客户端写一次，盘写 (k+m)/k 倍，其中 (k+m-1)/k 走 cluster 网
  */
 
 export interface PerfProfile {
@@ -26,7 +26,7 @@ export const PERF_PROFILES: PerfProfile[] = [
   { id: 'ec-8-2', label: 'EC 8+2', writeAmp: 10 / 8, clusterAmp: 9 / 8 },
 ]
 
-/** 软件栈、PG 分布不均、长尾等因素的经验折扣 */
+/** 软件栈开销、PG 分布不均、长尾，统一按这个比例打折 */
 export const EFFICIENCY = { write: 0.7, read: 0.8 }
 
 export interface PerfInput {
@@ -45,7 +45,7 @@ export interface PerfInput {
 
 export interface PerfLimit {
   label: string
-  /** 该资源允许的客户端带宽上限 MB/s */
+  /** 这个资源能撑到的客户端带宽上限 MB/s */
   valueMBps: number
 }
 
@@ -85,7 +85,7 @@ export function estimateCephPerf(input: PerfInput): PerfResult {
   const publicTotal = gbpsToMBps(input.publicGbps) * input.nodes
   const clusterTotal = shared ? publicTotal : gbpsToMBps(input.clusterGbps) * input.nodes
 
-  // 写：盘要承受 writeAmp 倍；cluster 网要承受 clusterAmp 倍；public 网承受 1 倍
+  // 写：盘扛 writeAmp 倍，cluster 网扛 clusterAmp 倍，public 网扛 1 倍
   const writeLimits: PerfLimit[] = [
     { label: '数据盘', valueMBps: diskWriteTotal / profile.writeAmp },
     {
@@ -99,7 +99,7 @@ export function estimateCephPerf(input: PerfInput): PerfResult {
     writeLimits.push({ label: 'public 网络', valueMBps: publicTotal })
   }
 
-  // 读：正常路径下只读一份，盘和 public 网各承受 1 倍
+  // 读：正常路径只读一份，盘和 public 网各扛 1 倍
   const readLimits: PerfLimit[] = [
     { label: '数据盘', valueMBps: diskReadTotal },
     { label: shared ? '网络（单网共用）' : 'public 网络', valueMBps: publicTotal },
@@ -110,15 +110,15 @@ export function estimateCephPerf(input: PerfInput): PerfResult {
 
   const notes: string[] = []
   if (shared) {
-    notes.push('未做前后端网络分离：副本流量与客户端流量抢同一张网，恢复期间业务性能会明显下降。')
+    notes.push('前后端网络没分开，副本流量和客户端流量抢同一张网，恢复期间业务性能掉得明显。')
   }
   if (profile.id.startsWith('ec-')) {
-    notes.push('EC 的估算只对大块顺序 I/O 成立；4K 随机小写会因为分片放大而远低于此值。')
+    notes.push('EC 的估算只对大块顺序 I/O 成立，4K 随机小写会被分片放大拖到远低于这个值。')
   }
   if (input.disksPerNode * input.diskWriteMBps > gbpsToMBps(Math.max(input.publicGbps, input.clusterGbps)) * 3) {
-    notes.push('单节点盘的聚合带宽远超网卡能力，加盘不会再提升带宽，应先升级网络。')
+    notes.push('单节点盘的聚合带宽远超网卡能力，加盘也提不上去，先把网络升了。')
   }
-  notes.push('以上为顺序大块带宽估算；随机小 I/O 的上限由 IOPS 和延迟决定，需要单独测量。')
+  notes.push('以上都是顺序大块带宽估算，随机小 I/O 的上限看 IOPS 和延迟，得单独测。')
 
   return {
     profile,

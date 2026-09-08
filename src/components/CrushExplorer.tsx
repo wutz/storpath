@@ -40,7 +40,7 @@ export function CrushExplorer() {
     }))
   }
 
-  // pg_num 翻倍后有多少对象换了 PG —— 直观解释"为什么调 pg_num 会全量迁移"
+  // pg_num 翻倍后有多少对象换了 PG，抽一批对象算个比例，摆出来看
   const churn = useMemo(() => {
     const before = mapBatch(SAMPLE_OBJECTS, input.pgNum)
     const after = mapBatch(SAMPLE_OBJECTS, input.pgNum * 2)
@@ -55,7 +55,7 @@ export function CrushExplorer() {
   return (
     <Panel eyebrow="Explorer" title="对象 → PG → OSD 映射" onReset={() => setInput(DEFAULTS)}>
       <div className="space-y-3.5 px-4 py-4">
-        <Field label="对象名" hint="改一个字符试试：PG 会完全变到另一个位置">
+        <Field label="对象名" hint="改一个字符试试，PG 会跳到另一个位置">
           <input
             value={input.objectName}
             onChange={(e) => set('objectName', e.target.value)}
@@ -156,7 +156,7 @@ export function CrushExplorer() {
         {/* 集群拓扑 */}
         <div>
           <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-mute">
-            <span>点击任意 OSD 可把它标记为 down，观察 acting 怎么变</span>
+            <span>点任意 OSD 把它标成 down，观察 acting 怎么变</span>
             <span className="flex items-center gap-1.5">
               <span className="h-2.5 w-2.5 rounded-xs bg-brand-600" /> primary
             </span>
@@ -215,8 +215,7 @@ export function CrushExplorer() {
         <p className="rounded-md bg-soft-2 px-3.5 py-3 text-xs leading-relaxed text-body">
           把 pg_num 从 <strong className="font-mono text-ink">{input.pgNum}</strong> 调到{' '}
           <strong className="font-mono text-ink">{input.pgNum * 2}</strong>，抽样 200 个对象里约{' '}
-          <strong className="font-mono text-ink">{churn}%</strong> 会落到不同的 PG 上 ——
-          这些数据都要搬家。这就是「调整 pg_num 会触发大规模迁移」的由来。
+          <strong className="font-mono text-ink">{churn}%</strong> 会落到不同的 PG 上，这些数据都要搬家。调整 pg_num 会触发大规模迁移，说的就是这件事。
         </p>
       </div>
     </Panel>

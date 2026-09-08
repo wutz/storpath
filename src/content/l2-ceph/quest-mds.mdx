@@ -4,11 +4,11 @@
 
 > CephFS 是不是有问题？我们的训练任务卡在读数据那一步半小时了，`ls` 一个目录要等三十秒。但是同事拷一个大文件又很快。
 
-这句话里藏着最关键的线索：**大文件很快、`ls` 很慢**。上一阶段学过，这两件事走的是完全不同的路径。
+线索就在这句话里：大文件快，`ls` 慢。上一阶段学过，这两件事走的是完全不同的路径。
 
 <Callout type="tip" title="先做这个区分，能省掉一半排查时间">
-- `ls` / `stat` / `open` / `create` → **元数据路径** → MDS + metadata pool
-- 读写文件内容 → **数据路径** → 客户端直连 OSD + data pool
+- `ls` / `stat` / `open` / `create` → 元数据路径 → MDS + metadata pool
+- 读写文件内容 → 数据路径 → 客户端直连 OSD + data pool
 
 数据面正常而元数据面慢，说明问题在 MDS 或 metadata pool，不用去看 OSD 的带宽。
 </Callout>
@@ -77,9 +77,9 @@ STANDBY MDS
 prod.ceph-node2.ghijkl
 
 # 关键数字：
-#   Reqs 8942/s  —— 元数据请求速率极高
-#   DNS/INOS 4096k —— 恰好卡在 4096k（4M），说明缓存已经顶到上限
-#   CAPS 8841k   —— 发放的 cap 数量巨大`,
+#   Reqs 8942/s：元数据请求速率极高
+#   DNS/INOS 4096k：恰好卡在 4096k（4M），说明缓存已经顶到上限
+#   CAPS 8841k：发放的 cap 数量巨大`,
     },
     {
       cmd: 'ceph config get mds mds_cache_memory_limit',
@@ -87,7 +87,7 @@ prod.ceph-node2.ghijkl
       hint: '缓存条目数顶在一个整数上，多半是内存上限卡住了。',
       output: `4294967296
 
-# 4GB —— 这是默认值。
+# 4GB，这是默认值。
 # 对于一个有 4100 万对象、214 个客户端的文件系统，这个值远远不够。`,
     },
     {
@@ -148,9 +148,9 @@ prod.ceph-node2.ghijkl
 2. `MDS_SLOW_REQUEST` + `MDS_TRIM` 同时出现 → MDS 处理能力不足
 3. `DNS/INOS` 恰好顶在 4096k → 缓存达到上限
 4. `client ls` 显示两个客户端占 92% 的 cap → 压力高度集中
-5. 客户端侧确认：单目录 128 万文件 × 48 并发 worker
+5. 客户端侧已核实，单目录 128 万文件 × 48 并发 worker
 
-**处置分三个层次**（这一点很重要——存储侧只能缓解，治本要靠应用侧）：
+处置分三层：存储侧只能缓解，治本要靠应用侧。
 
 ```bash
 # ── 立即缓解（存储侧）──
@@ -175,9 +175,9 @@ setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/datasets
 ```
 
 <Callout type="warn" title="存储侧的调优只能缓解，不能解决">
-把缓存从 4GB 调到 32GB，能撑住 8 倍的元数据量。但训练集群一扩容、数据集一变大，同样的问题会再次出现——而且缓存上限受限于单台机器的内存，**无法通过加节点线性扩展**。
+把缓存从 4GB 调到 32GB，能撑住 8 倍的元数据量。但训练集群一扩容、数据集一变大，同样的问题还会再来，而且缓存上限卡在单台机器的内存上，加节点也扩不上去。
 
-这就是 storplan 选型表里那句「CephFS 元数据缓存受节点内存限制，不足时性能锐减，不建议应用于 AI 场景」的实际含义。这一关的价值不只是学会排查，更是理解那句结论是怎么来的。
+这就是 storplan 选型表里那句「CephFS 元数据缓存受节点内存限制，不足时性能锐减，不建议应用于 AI 场景」的实际含义。排查手法只是顺带学会的，真正值钱的是弄明白那句结论是怎么来的。
 </Callout>
 
 <Callout type="tip" title="值班时怎么跟业务方沟通">
@@ -188,7 +188,7 @@ setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/datasets
 3. **给出对方能做的**：把数据集打包成 tar shards，元数据操作能降两个数量级
 4. **给出长期建议**：这个规模的训练数据集，建议评估专门的并行文件系统
 
-只做第 1 步会变成扯皮，四步都做才是解决问题。
+只做第 1 步就是扯皮，四步都做完才叫解决问题。
 </Callout>
 
 <Quiz
@@ -202,7 +202,7 @@ setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/datasets
   ]}
   explain={<>
     ls/stat 走 MDS + metadata pool，读写文件内容走 OSD + data pool。
-    两者表现分化，能立刻把排查范围砍掉一半——这是 CephFS 排障最有价值的一个判断。
+    两者表现分化，排查范围立刻就能砍掉一半，这是 CephFS 排障里最有用的一个判断。
   </>}
 />
 
@@ -228,16 +228,16 @@ setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/datasets
     { text: '直接把这两个客户端踢下线', feedback: '这是业务负载不是攻击，粗暴驱逐会造成训练任务失败，且没解决问题。' },
   ]}
   explain={<>
-    存储侧缓解 + 应用侧治本 + 长期架构建议，三层都要给。
-    只做存储侧调优，同样的问题会随着规模增长再次出现。
+    缓解、治本、长期架构建议这三层都得给。
+    只做存储侧调优的话，规模一涨同样的问题还会回来。
   </>}
 />
 
-## 这一关的落点
+## 训练机压满 MDS 缓存的那笔元数据账
 
-- 元数据慢而数据快 → 立刻锁定 MDS 与 metadata pool，不用查 OSD
-- `MDS_SLOW_REQUEST` 与 `MDS_TRIM` 常同时出现，都是 MDS 过载的信号
-- 缓存条目数顶在整数上 = `mds_cache_memory_limit` 卡住了
-- `ceph tell mds.<name> client ls` 按 `num_caps` 排序，能直接找出压力源
-- 处置要分三层：存储侧缓解、应用侧治本、架构层选型
-- 海量小文件 + CephFS 是结构性错配，调参只能延后问题
+- 数据快、元数据慢，就别再翻 OSD 了，问题在 MDS 和 metadata pool 这一侧
+- `MDS_SLOW_REQUEST` 和 `MDS_TRIM` 基本一起出现，看到就是 MDS 扛不住了
+- 缓存条目数卡在一个整数上，说明 `mds_cache_memory_limit` 到顶了
+- 找压力源不用一个个猜，`ceph tell mds.<name> client ls` 按 `num_caps` 排一下就有
+- 处置分三层：存储侧先缓解，应用侧治本，架构层再谈选型
+- 海量小文件配 CephFS 是结构性错配，调参只是把问题往后推

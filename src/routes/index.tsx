@@ -14,11 +14,11 @@ export const Route = createFileRoute('/')({
   component: Home,
 })
 
-/** 五个阶段各自解决什么问题 —— 说清「为什么是这个顺序」 */
+/** 五个阶段各解决什么问题，顺序为什么这么排 */
 const STAGE_HINT: Record<string, string> = {
-  'l0-fundamentals': '不用碰任何命令行。先把存储的语言学会，后面每一节都建立在这几个词上。',
+  'l0-fundamentals': '不用碰命令行。先把存储那套话学会，后面每节课都绕不开这几个词。',
   'l1-systems': '存储跑在机器上。学会读机器给你的信号，才谈得上判断「到底慢在哪」。',
-  'l2-ceph': '先把集群跑起来，再回头讲原理，最后用四关排障把手感练出来。',
+  'l2-ceph': '集群跑起来之后才回头讲原理，四关排障就是专门练手感的。',
   'l3-planning': '开始算账。把业务需求翻译成机器数量、盘型号和网络配置。',
   'l4-advanced': '走出 Ceph 的舒适区，把散落的知识收口成可交接的流程。',
 }
@@ -147,7 +147,7 @@ function Home() {
         })}
 
         <p className="text-sm leading-relaxed text-mute">
-          顺序是建议不是限制 —— 已经有底子的话，直接跳到对应阶段也行。
+          顺序是建议不是限制。有底子的话，直接跳到对应阶段也行。
           想先动手，
           <Link
             to="/labs"
@@ -155,7 +155,7 @@ function Home() {
           >
             实验与闯关
           </Link>
-          把全部动手环节单独汇总在了一起。
+          把全部动手环节汇总在了一起。
         </p>
       </section>
     </div>

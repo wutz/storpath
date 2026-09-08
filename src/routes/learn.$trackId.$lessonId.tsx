@@ -38,7 +38,7 @@ function LessonPage() {
     return (
       <div className="rounded-lg bg-canvas px-6 py-12 text-center shadow-card">
         <p className="text-body">
-          没有这节课：{trackId}/{lessonId}
+          找不到这节课：{trackId}/{lessonId}
         </p>
         <Link to="/" className="mt-3 inline-block text-sm text-brand-600 hover:underline">
           返回学习路径
@@ -85,7 +85,7 @@ function LessonPage() {
             <span className="font-mono text-[11px] text-mute">预计 {lesson.minutes} 分钟</span>
             {passedCheckpoints > 0 && (
               <span className="rounded-xs bg-info-soft px-1.5 py-0.5 text-[11px] text-info-deep">
-                检查点通过 {passedCheckpoints}
+                已过检查点 {passedCheckpoints}
               </span>
             )}
           </div>
@@ -159,7 +159,7 @@ function LessonPage() {
                 : 'bg-brand-600 text-white hover:bg-brand-700'
             }`}
           >
-            {done ? '✓ 已标记完成（点击取消）' : '标记为已完成'}
+            {done ? '✓ 已完成（点一下取消）' : '标记为已完成'}
           </button>
           {next ? (
             <Link
@@ -216,7 +216,7 @@ function LessonPage() {
   )
 }
 
-/** 进度提示条：这是整条路径的第几节、走到哪个阶段了 */
+/** 顶部进度条：第几节，走了多远 */
 function PathBanner({ position, stage }: { position: number; stage: string }) {
   const percent = Math.round((position / stats.lessonCount) * 100)
 
@@ -271,8 +271,8 @@ function OutlinePlaceholder({ outline }: { outline: string[] }) {
   return (
     <div className="rounded-md border border-dashed border-line-strong/50 bg-canvas px-5 py-5">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="rounded-xs bg-soft-2 px-2 py-0.5 text-xs text-body">正文待编写</span>
-        <span className="text-xs text-mute">以下是本节已定稿的小节大纲</span>
+        <span className="rounded-xs bg-soft-2 px-2 py-0.5 text-xs text-body">正文还没写</span>
+        <span className="text-xs text-mute">下面是这节已经定稿的大纲</span>
       </div>
       <ol className="mt-4 space-y-2">
         {outline.map((item, index) => (

@@ -11,13 +11,13 @@ export const Route = createRootRoute({
       {
         name: 'description',
         content:
-          '存储运维工程师的成长路线：一条循序渐进的完整学习路径，从存储原理与 Linux 系统基础起步，走过 Ceph 三种存储、容量与性能规划，直到 RDMA 网络、GPFS ECE、K8s CSI 与商业存储。',
+          '存储运维工程师的成长路线：每一步都接着上一步，从存储原理与 Linux 系统基础起步，走过 Ceph 三种存储、容量与性能规划，直到 RDMA 网络、GPFS ECE、K8s CSI 与商业存储。',
       },
     ],
     links: [
       { rel: 'stylesheet', href: appCss },
       { rel: 'icon', href: '/logo.svg', type: 'image/svg+xml' },
-      /* 正文与代码两套字面：Geist 走叙述，Geist Mono 走技术标签。中文回落到系统字体 */
+      /* 正文和代码用两套字体，Geist 走叙述，Geist Mono 走技术标签。中文回落到系统字体 */
       { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
       { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossOrigin: 'anonymous' },
       {

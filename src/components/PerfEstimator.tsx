@@ -18,7 +18,7 @@ const DEFAULTS: PerfInput = {
   profileId: 'replica-3',
 }
 
-/** 各资源上限横条：瓶颈那一条用品牌色点出来，其余保持中性 */
+/** 各资源上限横条：瓶颈那条用品牌色点出来，其余保持中性 */
 function LimitBars({ limits, bottleneck }: { limits: PerfLimit[]; bottleneck: PerfLimit }) {
   const max = Math.max(...limits.map((l) => l.valueMBps))
   return (

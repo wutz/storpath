@@ -6,13 +6,13 @@ import { setQuizPassed } from '#/lib/progress'
 export interface QuizOption {
   text: string
   correct?: boolean
-  /** 选错时针对性的解释，比统一答案更有教学价值 */
+  /** 选错时的针对性解释，比一句标准答案管用 */
   feedback?: string
 }
 
 /**
- * 随堂检查点。多选时必须完全选对才算通过。
- * 通过后写进 localStorage，课程页顶部的检查点计数会跟着变。
+ * 随堂检查点。多选得全选对才算过。
+ * 过了就写进 localStorage，课程页顶部的检查点计数跟着变。
  */
 export function Quiz({
   id,

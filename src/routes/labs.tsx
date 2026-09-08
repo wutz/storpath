@@ -11,7 +11,7 @@ const SECTIONS: { kind: LessonKind; title: string; eyebrow: string; desc: string
     kind: 'quest',
     title: '命令行闯关',
     eyebrow: 'Quest',
-    desc: '在模拟终端里接手一套出问题的集群，按目标一步步定位根因。',
+    desc: '在模拟终端里接手一套出问题的集群，照着目标一步步找出根因。',
   },
   {
     kind: 'lab',
@@ -23,7 +23,7 @@ const SECTIONS: { kind: LessonKind; title: string; eyebrow: string; desc: string
     kind: 'planner',
     title: '规划计算器',
     eyebrow: 'Planner',
-    desc: '改参数看结果，把容量与性能的账算明白。',
+    desc: '改参数看结果，把容量和性能的账算明白。',
   },
 ]
 
@@ -37,8 +37,8 @@ function LabsPage() {
         <div className="eyebrow">Hands-on</div>
         <h1 className="display-2xl mt-3">动手的部分。</h1>
         <p className="mt-4 max-w-2xl text-[17px] leading-relaxed text-body">
-          知识点看过就忘，手上做过才记得住。这里把全部动手环节汇总在一起，
-          你可以脱离课程顺序直接来练。
+          知识点看过就忘，动手做过才记得住。这里把全部动手环节汇总在一起，
+          你可以跳过课程顺序直接来练。
         </p>
       </header>
 

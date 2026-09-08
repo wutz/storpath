@@ -1,8 +1,8 @@
 /**
- * 课程正文加载。
+ * 加载课程正文。
  *
- * MDX 全量 eager 打包：课程数量在百篇量级以内时，换取的是 SSR 直出 + 站内秒开。
- * 若日后正文体量变大，改成 lazy glob + React.lazy 即可（届时需要接受首屏 loading）。
+ * MDX 全量 eager 打包。课程在百篇量级以内，换来 SSR 直出和站内秒开。
+ * 正文体量再大就换 lazy glob + React.lazy，代价是首屏多一个 loading。
  */
 import type { ComponentType } from 'react'
 

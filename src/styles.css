@@ -7,12 +7,12 @@
 /*
  * 设计令牌，对齐 DESIGN.md（Vercel 语汇）：
  * 中性阶 + hairline 描边 + 叠层阴影 + 负字距的标题，色彩预算留给一个品牌色。
- * 唯一的偏离：primary 不用 ink #171717，而用 Ceph 品牌红 —— 这是本站自己的身份。
+ * 唯一的偏离是 primary 不用 ink #171717，改用 Ceph 品牌红，这是本站自己的身份。
  */
 @theme {
   /*
    * 主题色取 Ceph 品牌红，落到一道「浅红」：hue 从上一版的 30（珊瑚橙）
-   * 收回到 20，饱和度再降一格 —— 玫瑰红，不是正红也不是橙，既离报错红
+   * 收回到 20，饱和度再降一格，落成玫瑰红。不是正红也不是橙，既离报错红
    * 够远，又比之前更有「红」的血统。brand-500 ≈ #da6b6e，
    * brand-600 ≈ #c54850。brand-600 是按钮底色，白字对比度 4.76，别再往上提亮。
    */
@@ -54,7 +54,7 @@
   /*
    * 半径按 DESIGN.md 的档位重排（比 Tailwind 默认整体大一档）：
    * sm 6px 是控件基准，md 8px 是卡片，lg 12px 是大卡片。
-   * 全站按钮统一走 6px 这一档 —— 不与 100px 胶囊混用。
+   * 全站按钮统一走 6px 这一档，不跟 100px 胶囊混用。
    */
   --radius-xs: 4px;
   --radius-sm: 6px;
@@ -78,7 +78,7 @@ html {
 
 /*
  * 兜底：任何一处算漏的宽度都不许把整页撑出屏幕。
- * 用 clip 而不是 hidden —— hidden 会让 body 变成滚动容器，顶栏的 sticky 就失效了。
+ * 用 clip 不用 hidden，因为 hidden 会让 body 变成滚动容器，顶栏的 sticky 就失效了。
  */
 body {
   overflow-x: clip;
@@ -91,7 +91,7 @@ body {
 }
 
 /*
- * 标题：字重封顶 600，字号越大字距收得越紧 —— 这是这套语汇的声音，
+ * 标题字重封顶 600，字号越大字距收得越紧，这是这套语汇的声音，
  * 换成默认字距就不像了。
  */
 @layer components {
@@ -194,7 +194,7 @@ body {
 }
 /*
  * 只给 MDX 产出的列表加项目符号。交互组件内部的 ul/ol 都带 className，
- * 用 :not([class]) 把它们排除掉 —— 否则 Quiz 的选项、Terminal 的目标
+ * 用 :not([class]) 把它们排除掉，否则 Quiz 的选项、Terminal 的目标
  * 会各自顶着一个圆点。（同 pre 的处理方式。）
  */
 .lesson-body :is(ul, ol):not([class]) {
@@ -225,7 +225,7 @@ body {
 /*
  * 代码块。没标语言的 ``` 块 shiki 不会处理，拿不到 .shiki 类，
  * 所以横向滚动和外观都要在 pre 这一层补上，否则宽输出会把整页撑破。
- * 选择器只认 MDX 产出的两种 pre —— 带 .shiki 的和完全没有 class 的，
+ * 选择器只认 MDX 产出的两种 pre，带 .shiki 的和完全没有 class 的，
  * 交互组件（如 Terminal）内部自带 class 的 pre 不受影响。
  */
 .lesson-body pre.shiki,
@@ -244,7 +244,7 @@ body {
   font-size: 0.8125rem;
   line-height: 1.7;
 }
-/* 行内代码——只作用于不在 pre 里的 code */
+/* 行内代码，只作用于不在 pre 里的 code */
 .lesson-body :not(pre) > code {
   background: var(--color-soft-2);
   color: var(--color-ink);
@@ -291,7 +291,7 @@ body {
 @media (max-width: 639px) {
   /*
    * iOS Safari 在字号小于 16px 的输入框获得焦点时会自动放大整页，
-   * 而且失焦后不缩回去 —— 表现就是"宽度卡住了"。所有表单控件统一 16px。
+   * 而且失焦后不缩回去，表现就是"宽度卡住了"。所有表单控件统一 16px。
    */
   input,
   select,

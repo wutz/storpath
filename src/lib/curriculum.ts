@@ -1,12 +1,12 @@
 /**
- * 课程大纲 —— 全站唯一数据源。
+ * 课程大纲，全站唯一数据源。
  * 首页、阶段页、课程页、实验索引、进度统计都从这里派生。
  *
- * 全站只有一条学习路径，数组顺序就是学习顺序：阶段按 L0→L4 从易到难，
- * 阶段内按「先概念、再实践、最后原理」排 —— 先讲清这东西是什么、能干什么，
+ * 全站只有一条学习路径，数组顺序就是学习顺序。阶段按 L0→L4 从易到难，
+ * 阶段内按「先概念、再实践、最后原理」排：先讲清这东西是什么、能干什么，
  * 再让人动手把它跑起来用熟，最后才回头拆它内部凭什么这么转。
- * 典型例子是 L2：架构总览 → 部署与三种存储实操 → Day-2 与闯关 → 最后才讲 CRUSH/PG，
- * 而不是一上来就把最烧脑的映射算法糊在初学者脸上。
+ * L2 就是典型，架构总览 → 部署与三种存储实操 → Day-2 与闯关 → 最后才讲 CRUSH/PG，
+ * 不是一上来就把最烧脑的映射算法糊在初学者脸上。
  * 改顺序只改这里，别的地方不用动。
  *
  * status: 'ready'   已有正文（src/content/<trackId>/<lessonId>.mdx）
@@ -55,7 +55,7 @@ export const KIND_LABEL: Record<LessonKind, string> = {
 }
 
 /*
- * 阶段（L0–L4）不再各配一种颜色 —— 五条彩虹加品牌色，颜色就没意义了。
+ * 阶段（L0–L4）不再各配一种颜色。五条彩虹加品牌色，颜色就没意义了。
  * 阶段身份交给等宽的 L0…L4 代号本身，颜色预算留给品牌色和下面三个状态徽标。
  */
 export const LEVEL_CHIP =
@@ -80,7 +80,7 @@ export const tracks: Track[] = [
     level: 'L0',
     title: '存储原理',
     subtitle: '块 / 文件 / 对象与冗余机制',
-    goal: '零基础的第一站。先弄清存储到底是什么、怎么被访问、跑在什么介质上、靠什么做到不丢数据 —— 这套心智模型换任何一款产品都通用。',
+    goal: '零基础的第一站。先弄清存储到底是什么、怎么被访问、跑在什么介质上、靠什么不丢数据。这套心智模型换任何一款产品都通用。',
     lessons: [
       {
         id: 'three-types',
@@ -328,7 +328,7 @@ export const tracks: Track[] = [
     level: 'L2',
     title: 'Ceph 主战场',
     subtitle: '一套集群，三种存储',
-    goal: '这是分布式存储运维的核心战场。先看懂架构，再动手部署、跑通三种存储、扛住 Day-2 与故障，最后回过头把 CRUSH 与 PG 的原理啃下来。',
+    goal: '分布式存储运维的核心战场。看懂架构之后动手部署，把三种存储跑通，扛住 Day-2 与故障，最后回过头啃 CRUSH 与 PG 的原理。',
     lessons: [
       {
         id: 'architecture',
@@ -493,7 +493,7 @@ export const tracks: Track[] = [
         status: 'ready',
         minutes: 45,
         objectives: [
-          '形成"先看全局再看局部"的排查顺序',
+          '养成从全局往局部收的排查顺序',
           '把 ceph health detail 的告警映射到具体动作',
           '独立完成一次从告警到根因的闭环',
         ],
@@ -564,14 +564,14 @@ export const tracks: Track[] = [
       {
         id: 'tuning',
         title: 'Ceph 性能调优与压测',
-        summary: '先量再调。没有基线的调优都是玄学。',
+        summary: '调优之前先打基线。没有基线就动手，纯属玄学。',
         kind: 'lab',
         status: 'ready',
         minutes: 50,
         objectives: [
           '为集群建立性能基线',
           '定位瓶颈在客户端、网络还是 OSD',
-          '掌握几个高收益的调优参数及其风险',
+          '记住几个收益高但带风险的调优参数',
         ],
         outline: [
           '基线怎么打：rados bench、elbencho',
@@ -585,7 +585,7 @@ export const tracks: Track[] = [
       {
         id: 'crush-pg',
         title: 'CRUSH 与 PG：数据到底落在哪块盘上',
-        summary: '前面一路把集群用熟了，这节回头看它凭什么这么转 —— CRUSH 是 Ceph 最漂亮的设计。',
+        summary: '前面一路把集群用熟了，这节回头看它凭什么这么转。CRUSH 是 Ceph 最漂亮的设计。',
         kind: 'concept',
         status: 'ready',
         minutes: 40,
@@ -612,7 +612,7 @@ export const tracks: Track[] = [
     level: 'L3',
     title: '容量与性能规划',
     subtitle: '从需求到方案',
-    goal: '把业务需求翻译成机器数量、盘型号和网络配置 —— 这是运维工程师开始有话语权的地方。',
+    goal: '把业务需求翻译成机器数量、盘型号和网络配置，这是运维工程师开始有话语权的地方。',
     lessons: [
       {
         id: 'requirements',
@@ -638,7 +638,7 @@ export const tracks: Track[] = [
       {
         id: 'capacity-calc',
         title: '算一遍：Ceph 集群容量规划',
-        summary: '给定裸盘配置，算出真正能用的容量 —— 交互计算器边调边看。',
+        summary: '给定裸盘配置，算出真正能用的容量。交互计算器边调边看。',
         kind: 'planner',
         status: 'ready',
         minutes: 35,
@@ -710,7 +710,7 @@ export const tracks: Track[] = [
       {
         id: 'gpfs-concept',
         title: 'GPFS / Storage Scale 概念与 ECE 架构',
-        summary: 'NSD、文件系统、集群角色 —— 换一套术语体系，但底层问题还是那些。',
+        summary: 'NSD、文件系统、集群角色，换一套术语体系，但底层问题还是那些。',
         kind: 'concept',
         status: 'ready',
         minutes: 40,
@@ -805,7 +805,7 @@ export const tracks: Track[] = [
       {
         id: 'rdma-storage',
         title: '实验：把 RDMA 接到存储上',
-        summary: 'GPFS verbsRdma、NVMe-oF over RDMA、GPUDirect Storage —— 三条落地路径与各自的验收方法。',
+        summary: 'GPFS verbsRdma、NVMe-oF over RDMA、GPUDirect Storage，三条落地路径与各自的验收方法。',
         kind: 'lab',
         status: 'ready',
         minutes: 45,
@@ -889,7 +889,7 @@ export const tracks: Track[] = [
           '在招标场景下提出有效的技术问题',
         ],
         outline: [
-          'Weka：极致性能与授权成本',
+          'Weka：性能拔尖，授权也贵',
           'VastData：DASE 架构与多协议统一',
           'XSKY XEOS：大规模对象存储',
           '3FS / JuiceFS / Longhorn 等其它路线',
@@ -905,7 +905,7 @@ export const tracks: Track[] = [
       {
         id: 'observability',
         title: '可观测性：指标、告警与容量水位',
-        summary: '值班靠的不是手快，是提前两周就看到容量要满了。',
+        summary: '值班靠提前两周看出容量要满，手快救不了场。',
         kind: 'lab',
         status: 'ready',
         minutes: 40,

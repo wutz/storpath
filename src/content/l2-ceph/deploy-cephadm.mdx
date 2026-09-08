@@ -1,15 +1,15 @@
 ## 这一节要做什么
 
-用 cephadm 从零拉起一套三节点 Ceph 集群。cephadm 用容器运行所有守护进程，通过 SSH 管理各节点，是当前官方推荐的部署方式。
+用 cephadm 从零拉起一套三节点 Ceph 集群。它用容器跑所有守护进程，靠 SSH 管理各节点，也是目前官方推荐的部署方式。
 
-**适用场景**：独立的存储集群，服务多个计算集群。与之相对的是下一节的 Rook（存储与计算同集群）。
+**适用场景**：一套独立的存储集群，给多个计算集群用。存储和计算塞进同一个集群的玩法，看下一节的 Rook。
 
 **实验环境要求**：3 台机器（虚拟机即可），每台至少 1 块空闲数据盘，能互相 SSH。
 
 <Callout type="warn" title="动手前的三条纪律">
-1. 数据盘必须是**空盘**，cephadm 会直接擦除它
+1. 数据盘必须是空盘，cephadm 会直接擦除它
 2. 不要提前创建名为 `ceph` 的系统用户，否则安装包的 post-install 脚本会执行失败
-3. 系统盘**必须是 SSD**，不能用机械盘——MON 的 RocksDB 在上面，机械盘会拖垮整个管理面
+3. 系统盘必须是 SSD，机械盘不行：MON 的 RocksDB 在上面，机械盘会拖垮整个管理面
 </Callout>
 
 ## 第 0 步：环境准备
@@ -36,7 +36,7 @@ dnf install -y podman
 <Callout type="trap" title="clock skew detected 是最常见的第一个告警">
 Ceph 的默认容忍偏差 `mon_clock_drift_allowed` 只有 0.05 秒。虚拟机休眠后恢复、NTP 源不可达，都会让 MON 之间时间对不上，直接 HEALTH_WARN。
 
-部署前先确认 `chronyc sources` 有可用源且 offset 很小。这条检查能省下你后面半小时的困惑。
+部署前顺手确认一下 `chronyc sources` 有可用源、offset 很小，能省下你后面半小时的困惑。
 </Callout>
 
 ## 第 1 步：安装 cephadm
@@ -57,7 +57,7 @@ cephadm add-repo --release tentacle \
 dnf install -y ceph-common
 ```
 
-节点上的 `cephadm` 只用来**引导集群**，以及后续用 `cephadm shell` 进容器执行命令。日常运维用的是 `ceph` 命令。
+节点上的 `cephadm` 只负责引导集群，以及后续用 `cephadm shell` 进容器执行命令。日常运维用的是 `ceph` 命令。
 
 ## 第 2 步：引导第一个节点
 
@@ -69,14 +69,14 @@ cephadm --image quay.io/ceph/ceph:v20.2.1 bootstrap \
 
 这一条命令做了六件事，记住它们，排障时用得上：
 
-1. 在本机创建第一个 **MON** 和 **MGR**
+1. 在本机创建第一个 MON 和 MGR
 2. 生成一对 SSH 密钥，把公钥加进本机 `authorized_keys`
-3. 把公钥复制一份到 `/etc/ceph/ceph.pub`（**加节点时要用**）
+3. 把公钥复制一份到 `/etc/ceph/ceph.pub`（加节点时要用）
 4. 生成最小配置文件 `/etc/ceph/ceph.conf`
 5. 把 `client.admin` 的 keyring 写到 `/etc/ceph/ceph.client.admin.keyring`
 6. 给引导节点打上 `_admin` 标签
 
-完成后会打印 Dashboard 地址和初始密码，**记下来**。
+完成后会打印 Dashboard 地址和初始密码，记得抄下来。
 
 ```bash
 ceph -s      # 此时应该看到 1 个 mon、1 个 mgr、0 个 osd
@@ -97,7 +97,7 @@ mgr/cephadm/container_image_alertmanager = <内网仓库>/alertmanager:v0.28.1
 cephadm --image <内网仓库>/ceph:v20.2.1 bootstrap --mon-ip 10.0.20.1 --config ./initial-ceph.conf
 ```
 
-否则部署到监控组件那一步会卡住，而且报错信息不直观。
+不然走到监控组件那一步会卡住，报错信息还看不出问题在哪。
 </Callout>
 
 ## 第 3 步：添加其余节点
@@ -114,7 +114,7 @@ ceph orch host add ceph-node3 --labels _admin
 ceph orch host ls
 ```
 
-标签决定了哪些服务会调度到哪些节点：
+标签决定服务调度到哪些节点：
 
 | 标签 | 含义 |
 | --- | --- |
@@ -139,7 +139,7 @@ ceph-node1  /dev/nvme1n1  ssd   SAMSUNG_MZQL...   7680G  Yes
 ceph-node1  /dev/nvme0n1  ssd   INTEL_SSDSC...     480G  No         Insufficient space / LVM detected
 ```
 
-`AVAILABLE` 为 No 时看 `REJECT REASONS`——最常见的是盘上有残留分区或 LVM。
+`AVAILABLE` 为 No 时看 `REJECT REASONS`，最常见的是盘上有残留分区或 LVM。
 
 ```bash
 # 方式一：把所有可用盘都做成 OSD（实验环境常用）
@@ -161,7 +161,7 @@ ceph health detail
 ceph orch ps           # 看所有守护进程的部署状态
 ```
 
-健康的结果应该是：`HEALTH_OK`、MON quorum 有 3 个、所有 OSD `up` 且 `in`、所有 PG `active+clean`。
+跑完应该看到 `HEALTH_OK`，MON quorum 有 3 个，所有 OSD `up` 且 `in`，所有 PG `active+clean`。
 
 <Callout type="trap" title="常见翻车点速查">
 | 现象 | 原因 | 处理 |
@@ -186,7 +186,7 @@ ceph config set osd osd_memory_target 6442450944
 ceph config get osd osd_memory_target
 ```
 
-内存给得不够，集群一进入恢复状态就会 OOM——这是新集群最常见的翻车方式之一。
+内存给得不够，集群一进恢复状态就 OOM，新集群翻车最多的就是这个。
 
 <Quiz
   id="cephadm-1"
@@ -211,7 +211,7 @@ ceph config get osd osd_memory_target
   ]}
   explain={<>
     Ceph 拒绝使用带有残留分区、LVM 或文件系统签名的盘，这是防止误擦数据的保护机制。
-    确认盘上确实没有需要的数据后，用 zap 清理。<strong>执行前务必确认盘号</strong>——zap 是不可逆的。
+    确认盘上确实没有需要的数据后，用 zap 清理。<strong>执行前务必确认盘号</strong>，zap 是不可逆的。
   </>}
 />
 
@@ -227,11 +227,11 @@ ceph config get osd osd_memory_target
   explain={<>记住 bootstrap 的六件事，能解释后面绝大多数"为什么这个文件在这里"的疑问。</>}
 />
 
-## 这节课的落点
+## 照这套顺序把 cephadm 集群拉起来
 
-- 部署前三件事：hosts 解析、时间同步、容器运行时
-- bootstrap 做了六件事，其中 `/etc/ceph/ceph.pub` 是加节点的前提
-- 标签驱动调度，`_admin` 决定谁能直接跑 ceph 命令
-- 盘加不上先看 `REJECT REASONS`，多数是残留元数据，用 zap 清理
-- 节点少于 5 个时把 MON 固定为 3 个
-- `osd_memory_target` 必须按节点实际内存调整，否则恢复时 OOM
+- hosts 解析、时间同步、容器运行时，动手前一样都不能少
+- bootstrap 顺手做掉六件事，`/etc/ceph/ceph.pub` 是后面加节点的前提
+- 服务调度看标签，能不能直接跑 ceph 命令看有没有 `_admin`
+- 盘加不上先看 `REJECT REASONS`，多数是残留元数据，zap 清掉就行
+- 节点少于 5 个，把 MON 固定成 3 个
+- `osd_memory_target` 得按节点实际内存调，不然恢复时会 OOM

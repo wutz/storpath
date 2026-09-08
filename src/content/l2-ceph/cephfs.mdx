@@ -2,7 +2,7 @@
 
 CephFS 提供完整的 POSIX 语义：目录树、权限、硬链接、文件锁，多客户端同时读写。开发不用改一行代码。
 
-苦在元数据。数据可以靠加盘线性扩展，**元数据不行**——它需要一个知道整棵目录树的服务，也就是 MDS。
+苦在元数据。数据可以靠加盘线性扩展，元数据不行。元数据得有个服务盯着整棵目录树，那就是 MDS。
 
 ## 架构：数据与元数据分家
 
@@ -12,9 +12,9 @@ CephFS 提供完整的 POSIX 语义：目录树、权限、硬链接、文件锁
    └────数据读写────────────────────> OSD ──> data pool（可副本可 EC）
 ```
 
-关键点：**MDS 不在数据路径上**。客户端从 MDS 拿到文件的位置和权限（cap）之后，直接和 OSD 读写数据。MDS 只处理"这个文件在哪、我能不能动它"。
+MDS 不在数据路径上。客户端从 MDS 拿到文件的位置和权限（cap）之后，直接和 OSD 读写数据，MDS 只负责回答"这个文件在哪、我能不能动它"。
 
-所以 MDS 的负载正比于**元数据操作次数**，与数据吞吐无关。一个跑满带宽的大文件顺序读几乎不给 MDS 压力；一个疯狂 `ls` 的脚本能把 MDS 打爆。
+所以 MDS 的负载正比于元数据操作次数，跟数据吞吐无关。跑满带宽的大文件顺序读几乎不给 MDS 压力，一个疯狂 `ls` 的脚本反而能把 MDS 打爆。
 
 ## 第 1 步：创建文件系统
 
@@ -100,18 +100,18 @@ mount -t ceph tenant-a@.prod=/tenant-a /mnt/data -o ...
 ```
 
 <Callout type="trap" title="CephFS 配额是软约束">
-配额由**客户端**负责执行，不是服务端强制。这意味着：
+配额由客户端负责执行，服务端并不强制。
 
 - 超额后不会立刻停止写入，客户端要过一会儿才感知到（可能超出几百 MB）
 - 恶意或有 bug 的客户端可以绕过配额
 - 老版本内核客户端对配额的支持不完整
 
-所以配额适合用来防止"无意中写爆"，**不能作为强隔离手段**。真正需要硬隔离，得给每个租户单独的文件系统甚至集群。
+所以配额适合用来防止"无意中写爆"，别拿来当强隔离手段。真要硬隔离，得给每个租户单独的文件系统，甚至单独一套集群。
 </Callout>
 
 ## 第 4 步：多活 MDS
 
-单个 MDS 的元数据吞吐有上限。可以横向扩：
+单个 MDS 的元数据吞吐有上限，想扩只能横向加：
 
 ```bash
 # 设置 2 个 active MDS
@@ -121,7 +121,7 @@ ceph fs set prod max_mds 2
 ceph orch apply mds prod --placement="4"
 ```
 
-多活 MDS 通过**目录分片**把目录树分给不同 MDS。默认是动态子树分区，也可以手工钉住：
+多活 MDS 靠目录分片把目录树拆给不同 MDS。默认走动态子树分区，也能手工钉住：
 
 ```bash
 # 把某个热点目录钉到 rank 1
@@ -131,7 +131,7 @@ setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/hot-dir
 <Callout type="warn" title="多活 MDS 不是无脑加就快">
 跨 MDS 的操作（比如把文件从 rank 0 管的目录 rename 到 rank 1 管的目录）需要 MDS 之间协调，反而更慢。动态子树分区也有迁移开销，在负载抖动时可能来回搬。
 
-经验：**先把单 MDS 的内存调够、把 metadata pool 放 SSD**，这两项的收益通常大于加 MDS。确实撑不住再上多活，并配合手工 pin 把不同业务的目录固定到不同 rank。
+经验是先把单 MDS 的内存调够、把 metadata pool 放 SSD，这两项的收益通常大于加 MDS。确实撑不住再上多活，配合手工 pin 把不同业务的目录固定到不同 rank。
 </Callout>
 
 ## 第 5 步：MDS 压力排查
@@ -155,9 +155,9 @@ ceph config set mds mds_cache_memory_limit 34359738368   # 32GB
 <Callout type="trap" title="为什么说 CephFS 不建议用于 AI 训练">
 AI 训练数据集常是海量小文件。每 epoch 遍历一遍数据集，就是几百万次元数据操作。
 
-MDS 把热元数据放内存，缓存装不下时性能**断崖式**下跌——不是线性变慢，是掉到零头。而缓存大小受限于单台机器的内存，无法通过加节点线性扩展。
+MDS 把热元数据放内存，缓存装不下时性能断崖式下跌，直接掉到零头，不会线性退化。而缓存大小受限于单台机器的内存，加节点也扩不出来。
 
-这就是 storplan 选型表里"CephFS 元数据缓存受节点内存限制，不足时性能锐减，不建议应用于 AI 场景"的具体含义。这类场景应该看 GPFS、Weka 或 VastData。
+storplan 选型表里那句"CephFS 元数据缓存受节点内存限制，不足时性能锐减，不建议应用于 AI 场景"，说的就是这件事。这类场景应该看 GPFS、Weka 或 VastData。
 </Callout>
 
 ## 接到 K8s
@@ -178,7 +178,7 @@ reclaimPolicy: Delete
 allowVolumeExpansion: true
 ```
 
-用它创建的 PVC 支持 `ReadWriteMany`，多个 Pod 可以同时挂载同一个卷——这正是 RBD 做不到的事。
+用它创建的 PVC 支持 `ReadWriteMany`，多个 Pod 能同时挂载同一个卷，这正是 RBD 做不到的。
 
 <Quiz
   id="cephfs-1"
@@ -191,7 +191,7 @@ allowVolumeExpansion: true
   ]}
   explain={<>
     ls / stat 是纯元数据操作，走 MDS 和 metadata pool；大文件读写走 OSD 和 data pool。
-    两者表现分化，说明问题在元数据侧：先看 mds_cache_memory_limit 够不够，再看 metadata pool 是不是在 SSD 上。
+    两者表现分化，说明问题在元数据侧。先看 mds_cache_memory_limit 够不够，再看 metadata pool 是不是在 SSD 上。
   </>}
 />
 
@@ -204,7 +204,7 @@ allowVolumeExpansion: true
     { text: '适合防止无意中写爆，不适合作为强隔离手段', correct: true },
     { text: '恶意客户端也无法绕过配额', feedback: '正因为由客户端执行，改造过的客户端是可以绕过的。' },
   ]}
-  explain={<>理解"配额是软的"很重要：给外部租户做隔离时，配额只是第一道防线，真正的隔离要靠独立文件系统或独立集群。</>}
+  explain={<>配额是软的，这点记牢。给外部租户做隔离时，配额只是第一道防线，真正的隔离要靠独立文件系统或独立集群。</>}
 />
 
 <Quiz
@@ -219,11 +219,11 @@ allowVolumeExpansion: true
   explain={<>缓存和元数据盘的收益通常大于加 MDS，而且没有副作用。确实撑不住再上多活，并用 ceph.dir.pin 手工把不同业务钉到不同 rank。</>}
 />
 
-## 这节课的落点
+## 上线 CephFS 前，把 MDS 与配额这两件事定下来
 
-- MDS 只管元数据，数据由客户端直连 OSD；MDS 负载正比于元数据操作次数
-- metadata pool 必须副本、必须 SSD
-- 内核客户端优先，FUSE 用于内核太老或需要新特性
-- 配额是客户端执行的软约束，不能当强隔离用
-- 多活 MDS 是最后手段，先调缓存和元数据盘
-- 海量小文件（如 AI 训练集）是 CephFS 的软肋，该场景应看 GPFS / Weka / VastData
+- MDS 只管元数据，数据由客户端直连 OSD，负载正比于元数据操作次数
+- metadata pool 只能副本，而且必须落在 SSD 上
+- 挂载优先用内核客户端，FUSE 留给内核太老或需要新特性的场景
+- 配额由客户端执行，是软约束，别拿来当强隔离
+- 多活 MDS 放到最后，先调缓存和元数据盘
+- 海量小文件（如 AI 训练集）是 CephFS 的软肋，这类场景该看 GPFS / Weka / VastData

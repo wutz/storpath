@@ -3,12 +3,12 @@ import { useLessonKey } from './lesson-context'
 import { setQuizPassed } from '#/lib/progress'
 
 export interface TerminalCommand {
-  /** 标准写法，也是 hint 里展示的形式 */
+  /** 标准写法，hint 里显示的也是这个 */
   cmd: string
   /** 等价写法 */
   aliases?: string[]
   output: string
-  /** 填了就是一个闯关目标，按数组顺序编号 */
+  /** 填了就是一条闯关目标，按数组顺序编号 */
   goal?: string
   /** 目标提示，输入 hint 时按顺序给出 */
   hint?: string
@@ -23,8 +23,8 @@ const normalize = (s: string) => s.trim().replace(/\s+/g, ' ')
 
 /**
  * 命令行演练器。
- * 不是真终端：所有输出都是预置的固定文本，用来练"看到什么该想什么"，
- * 而不是练打字。真机操作在 lab 类课程里做。
+ * 这里不是真终端，所有输出都是预置的固定文本，练的是"看到什么该想什么"。
+ * 打字不用在这儿练，真机操作去 lab 类课程。
  */
 export function Terminal({
   id,
@@ -84,11 +84,11 @@ export function Terminal({
         kind: 'system',
         text: [
           '演练内置命令：',
-          '  help   显示这段说明',
-          '  goals  查看本次演练的目标',
-          '  hint   给出当前目标的提示',
+          '  help   看这段说明',
+          '  goals  看这次演练的目标',
+          '  hint   给当前目标的提示',
           '  clear  清屏',
-          '其余命令请按真实排查思路自己敲。',
+          '其余命令按真实排查思路自己敲。',
         ].join('\n'),
       })
       return
@@ -122,7 +122,7 @@ export function Terminal({
     if (!hit) {
       push({
         kind: 'output',
-        text: `-bash: ${input.split(' ')[0]}: 本次演练没有预置这条命令的输出（输入 hint 看提示）`,
+        text: `-bash: ${input.split(' ')[0]}: 本次演练没预置这条命令的输出（输入 hint 看提示）`,
       })
       return
     }
@@ -132,7 +132,7 @@ export function Terminal({
     if (hit.goal && !doneGoals.includes(hit.cmd)) {
       const nextDone = [...doneGoals, hit.cmd]
       setDoneGoals(nextDone)
-      push({ kind: 'system', text: `✓ 目标达成：${hit.goal}` })
+      push({ kind: 'system', text: `✓ 完成：${hit.goal}` })
       if (nextDone.length === goals.length) {
         push({ kind: 'system', text: '🎉 全部目标完成，这一关过了。' })
       }
@@ -165,7 +165,7 @@ export function Terminal({
       )}
 
       {/*
-        输出按列对齐是这套演练的重点（df -h、ceph -s 都靠对齐读），
+        输出对齐是这套演练要练的（df -h、ceph -s 都得对齐着读），
         所以窄屏下不折行，改成盒子内部横向滚动。
       */}
       <div
@@ -229,7 +229,7 @@ export function Terminal({
       </div>
 
       <footer className="border-t border-white/10 bg-black/30 px-4 py-2 font-mono text-[11px] text-white/40">
-        help 查看用法 · goals 看目标 · hint 要提示 · ↑↓ 翻历史
+        help 看用法 · goals 看目标 · hint 要提示 · ↑↓ 翻历史
       </footer>
     </section>
   )

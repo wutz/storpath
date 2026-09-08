@@ -1,8 +1,8 @@
 ## 换一套术语，同一批问题
 
-GPFS（现名 IBM Storage Scale，曾用名 Spectrum Scale）1998 年就有了，是 IBM 的共享磁盘并行集群文件系统。企业级高性能场景里，它的部署量远超你的想象。
+GPFS（现名 IBM Storage Scale，曾用名 Spectrum Scale）1998 年就有了，是 IBM 的共享磁盘并行集群文件系统，企业级高性能场景里用得很广。
 
-学它的最大障碍是**术语体系完全不同**。但底下的问题是同一批：数据怎么切、怎么冗余、元数据谁管、故障时怎么恢复。先建立术语映射，学习速度会快很多。
+学它最费劲的地方在术语，整套都对不上。但底下的问题是同一批：数据怎么切、怎么冗余、元数据谁管、故障时怎么恢复。先把术语映射建起来，学起来会快很多。
 
 | GPFS | 大致对应 Ceph 的 | 说明 |
 | --- | --- | --- |
@@ -21,19 +21,19 @@ GPFS（现名 IBM Storage Scale，曾用名 Spectrum Scale）1998 年就有了�
 <Callout type="note" title="最大的架构差异：GPFS 没有独立的元数据服务">
 CephFS 用 MDS 集中处理元数据，MDS 的内存就是元数据缓存的上限。
 
-GPFS 把元数据分布到**所有节点**，用分布式令牌（token）机制协调并发访问。这带来了两个直接结果：
+GPFS 把元数据分布到所有节点，用分布式令牌（token）机制协调并发访问。有两个直接结果：
 
-- 元数据能力随节点数扩展，不受单机内存约束 → **这就是它在海量小文件场景强于 CephFS 的根本原因**
+- 元数据能力随节点数扩展，不受单机内存约束 → 这就是它在海量小文件场景强于 CephFS 的根本原因
 - 代价是每个客户端都要参与集群协议，必须安装 GPFS 客户端软件（不像 NFS 那样零依赖）
 </Callout>
 
 ## SNC 模式与 ECE
 
-GPFS 有多种部署形态，当前高性能场景主流是 **SNC（Shared Nothing Cluster）**：每台服务器有自己的本地盘，靠软件做跨节点冗余。
+GPFS 有多种部署形态，当前高性能场景主流是 **SNC（Shared Nothing Cluster）**。每台服务器有自己的本地盘，靠软件做跨节点冗余。
 
-**ECE（Erasure Code Edition）** 就是这条路线的产品化：以纯软件形式提供 IBM Storage Scale RAID，在通用 x86 服务器上做纠删码。
+**ECE（Erasure Code Edition）** 就是这条路线的产品化，以纯软件形式提供 IBM Storage Scale RAID，在通用 x86 服务器上做纠删码。
 
-关键规则（来自官方硬件要求，规划时的硬约束）：
+关键的几条硬规则，出自官方硬件要求，规划时必须满足：
 
 ```
 · 每台服务器至少 16 个 CPU 核心
@@ -47,12 +47,12 @@ GPFS 有多种部署形态，当前高性能场景主流是 **SNC（Shared Nothi
 · 所有由 ECE 管理的驱动器必须禁用易失性写缓存
 ```
 
-最后一条和 L1 讲的 PLP 是同一件事：**不能让盘在数据真正落盘前就返回成功**。
+最后一条和 L1 讲的 PLP 是同一件事，就是不能让盘在数据真正落盘前就返回成功。
 
 <Callout type="warn" title="同一个 RG 内的节点配置必须完全一致">
-官方要求：恢复组中的所有存储服务器必须具有**匹配的配置**——相同的 CPU、内存、网络和存储设备配置。
+官方要求，恢复组里所有存储服务器必须有**匹配的配置**，CPU、内存、网络和存储设备都要一致。
 
-这不是建议，是硬性要求。它对采购的影响很直接：**扩容时必须买到和原来一模一样的机型**，否则只能新建一个 RG。所以规划阶段就要确认机型的可采购周期。
+这不是建议，是硬性要求，对采购的影响很直接：扩容时必须买到和原来一模一样的机型，否则只能新建一个 RG。所以规划阶段就要确认机型的可采购周期。
 </Callout>
 
 ## ECE 支持的纠删码
@@ -62,7 +62,7 @@ GPFS 有多种部署形态，当前高性能场景主流是 **SNC（Shared Nothi
 3WayReplication、4WayReplication
 ```
 
-官方按节点数给出的推荐，和 L1 学的 EC 规律完全吻合——**节点越少，只能选冗余度更高、效率更低的方案**：
+官方按节点数给出的推荐，和 L1 学的 EC 规律完全吻合。**节点越少，只能选冗余度更高、效率更低的方案**：
 
 | 节点数 | 推荐方案 |
 | --- | --- |
@@ -87,7 +87,7 @@ scale-out 节点数 ≥ 7      → quorum 节点数 7
 
 ## 多集群：owning 与 accessing
 
-这是 GPFS 一个非常实用的特性，也是它在 HPC 环境广泛使用的原因。
+HPC 里 GPFS 用得多，多集群这个能力是主要原因之一。
 
 ```
 owning cluster（拥有集群）
@@ -99,17 +99,17 @@ accessing cluster（访问集群）
   └─ 不拥有存储，挂载远端集群的文件系统
 ```
 
-特点：
+几条规则：
 
 - 每个集群独立管理，有自己的 quorum 节点和 GUI 服务
-- 用 `mmauth` 动态授权或撤销远程集群对**特定 fileset** 的访问权限
+- 用 `mmauth` 动态授权或撤销远程集群对特定 fileset 的访问权限
 - 配额和快照只对被授权的 fileset 可见
-- **root fileset 的内容对所有客户端集群始终可见** —— 这是一个容易被忽略的安全边界
+- root fileset 的内容对所有客户端集群始终可见，这是一条容易被忽略的安全边界
 
 <Callout type="trap" title="root fileset 始终可见的含义">
-做多租户隔离时，如果把数据放在 root fileset 里，所有访问集群都能看到。必须为每个租户创建**独立的 fileset**，并通过 `mmauth` 精确授权。
+做多租户隔离时，如果把数据放在 root fileset 里，所有访问集群都能看到。必须为每个租户单独创建 fileset，再用 `mmauth` 精确授权。
 
-同时给 root fileset 设置 QoS 限制，防止用户误用或滥用——这是官方文档里明确给出的缓解手段。
+同时给 root fileset 设置 QoS 限制，防止用户误用或滥用。官方文档里明确给出了这个缓解手段。
 </Callout>
 
 ## 常用命令速查
@@ -143,7 +143,7 @@ mmshutdown -a && mmstartup -a
 <Callout type="tip" title="mmlsconfig 与 mmdiag --config 的区别">
 `mmlsconfig` 显示的是**配置里写了什么**，`mmdiag --config` 显示的是**当前进程实际生效的值**。
 
-很多参数改完需要重启守护进程才生效。排查"为什么改了没效果"时，先用 `mmdiag --config` 确认生效值——这个习惯能省很多时间。
+很多参数改完需要重启守护进程才生效。排查"为什么改了没效果"时，先用 `mmdiag --config` 确认生效值，能省很多时间。
 </Callout>
 
 <Quiz
@@ -185,12 +185,12 @@ mmshutdown -a && mmstartup -a
   explain={<>「root fileset 始终可见」是 GPFS 多集群的一个硬性安全边界。隔离必须建立在独立 fileset + mmauth 授权之上。</>}
 />
 
-## 这节课的落点
+## 别拿 Ceph 的经验去套 GPFS
 
-- 术语映射建好，学习速度翻倍：NSD≈OSD、failure group≈故障域、fileset≈带配额的子目录
-- GPFS 没有集中式元数据服务，元数据分布在所有节点——这是它在小文件场景强于 CephFS 的根本原因
-- ECE 有硬性硬件要求，且同一 RG 内节点配置必须完全一致（影响扩容采购）
-- EC 方案选择与节点数强相关，规律同 Ceph
-- quorum 用奇数（3/5/7），失去 quorum 会卸载整个集群的文件系统
-- 多集群的 owning / accessing 模型很实用，但 root fileset 始终可见
-- `mmlsconfig` 看配置，`mmdiag --config` 看生效值
+- 术语映射建好，学习速度翻倍。NSD≈OSD、failure group≈故障域、fileset≈带配额的子目录
+- GPFS 没有集中式元数据服务，元数据摊在所有节点上，这是它在小文件场景强于 CephFS 的根本原因
+- ECE 的硬件要求是硬性的，同一个 RG 内的节点配置还必须完全一致，这直接影响扩容采购
+- 选哪种 EC 方案取决于节点数，规律和 Ceph 一样
+- quorum 取奇数（3/5/7）。丢了 quorum，整个集群的文件系统会被卸载
+- 多集群的 owning / accessing 模型好用，但 root fileset 始终可见
+- 想确认参数到底有没有生效，看 `mmdiag --config`，别只看 `mmlsconfig`

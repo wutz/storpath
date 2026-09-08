@@ -1,6 +1,6 @@
 ## 把 RADOS 包成一个 S3
 
-RGW（RADOS Gateway）是一个 HTTP 服务，它把 S3 / Swift API 翻译成 RADOS 操作。和 RBD、CephFS 不同，客户端不需要装任何 Ceph 客户端——**一个 HTTP 请求就够了**。
+RGW（RADOS Gateway）是一个 HTTP 服务，把 S3 / Swift API 翻译成 RADOS 操作。和 RBD、CephFS 不一样，客户端不用装任何 Ceph 客户端，一个 HTTP 请求就够了。
 
 ```
 S3 客户端 ──HTTP──> RGW ──librados──> RADOS
@@ -15,15 +15,15 @@ RGW 会自动创建一组池：
 | `.rgw.root` | realm / zonegroup / zone 配置 | 副本 |
 | `<zone>.rgw.meta` | 用户、bucket 元数据 | 副本 |
 | `<zone>.rgw.log` | 使用日志、GC 队列 | 副本 |
-| `<zone>.rgw.buckets.index` | **bucket 内对象的索引** | 副本，**必须 SSD** |
+| `<zone>.rgw.buckets.index` | bucket 内对象的索引 | 副本，必须 SSD |
 | `<zone>.rgw.buckets.data` | 对象数据本体 | 可以 EC |
 
 <Callout type="warn" title="index 池是 RGW 的命门">
-`buckets.index` 存的是每个 bucket 里所有对象名的有序索引。它的特征是：**小对象、高频随机读写、omap 密集**。
+`buckets.index` 存的是每个 bucket 里所有对象名的有序索引。它的特点是小对象、高频随机读写、omap 密集。
 
 放在 HDD 上，`ls` 一个大 bucket 会慢到超时；单个 bucket 对象数过多（百万级以上）时，索引分片不足还会导致写入阻塞。这是自建对象存储最常见的性能事故来源。
 
-务必：index 池用副本 + SSD，data 池才用 EC。
+务必记住：index 池用副本 + SSD，data 池才用 EC。
 </Callout>
 
 ## 部署
@@ -105,7 +105,7 @@ aws --endpoint-url http://10.0.20.100 s3 ls s3://testbucket/
 | 域名解析失败 / `NoSuchBucket` | 用了 virtual-hosted 风格但没配泛域名 DNS | 改用 path-style，或配 `*.s3.example.com` |
 | `RequestTimeTooSkewed` | 同第一条 | 同上 |
 
-**先查时间同步**几乎是条件反射。
+先查时间同步，这几乎是条件反射。
 </Callout>
 
 ## bucket 分片：海量对象的关键
@@ -123,12 +123,12 @@ ceph config set client.rgw rgw_override_bucket_index_max_shards 64
 radosgw-admin bucket reshard --bucket=mybucket --num-shards=128
 ```
 
-规划口径：**每个索引分片约 10 万个对象**。预计存 1000 万对象的 bucket，分片数应在 100 以上。
+规划口径是每个索引分片约 10 万个对象。预计存 1000 万对象的 bucket，分片数应在 100 以上。
 
 <Callout type="warn" title="动态 reshard 的代价">
 新版本 RGW 支持自动 reshard，但重分片期间该 bucket 的写入会被阻塞（大 bucket 可能持续几分钟）。多站点复制场景下自动 reshard 还可能引发同步问题。
 
-**最好的办法是建 bucket 时就把分片数设够**，而不是等它长大了再补救。
+最好的办法是建 bucket 时就把分片数设够，别等它长大了再补救。
 </Callout>
 
 ## 生命周期与分段上传
@@ -161,7 +161,7 @@ radosgw-admin lc list
 radosgw-admin lc process       # 手工触发一次
 ```
 
-第一条规则（7 天清理未完成的分段上传）应该是**每个 bucket 的标配**——上一阶段说过，残留分片是"用量对不上"的头号原因。
+第一条规则（7 天清理未完成的分段上传）应该是每个 bucket 的标配。上一阶段说过，残留分片是"用量对不上"的头号原因。
 
 ## 监控
 
@@ -186,7 +186,7 @@ radosgw-admin usage show --uid=app1
   ]}
   explain={<>
     index 池是小对象高频随机访问，必须副本 + SSD；分片数按每片 10 万对象规划。
-    这两点没做对，海量对象场景一定会出问题——这是自建对象存储最经典的坑。
+    这两点没做对，海量对象场景一定会出问题，这是自建对象存储最经典的坑。
   </>}
 />
 
@@ -199,7 +199,7 @@ radosgw-admin usage show --uid=app1
     { text: 'index 池应该放在 SSD 上', correct: true },
     { text: '所有 RGW 池都用 EC 最省空间', feedback: '索引和元数据是小对象随机访问，用 EC 会严重放大 I/O。' },
   ]}
-  explain={<>规划原则：数据大而顺序 → EC；元数据小而随机 → 副本 + SSD。这个原则在 CephFS 上同样成立。</>}
+  explain={<>规划原则是数据大而顺序 → EC，元数据小而随机 → 副本 + SSD。这个原则在 CephFS 上同样成立。</>}
 />
 
 <Quiz
@@ -217,10 +217,10 @@ radosgw-admin usage show --uid=app1
   </>}
 />
 
-## 这节课的落点
+## RGW 上线前要盯住的几件事
 
 - RGW 是无状态 HTTP 网关，客户端零依赖
 - index 池必须副本 + SSD，data 池才用 EC
-- 三个高频报错：签名不匹配（查时间）、域名风格、时间偏移
-- bucket 分片按每片 10 万对象规划，建时设够，避免事后 reshard
-- 每个 bucket 都应配「7 天清理未完成分段上传」的生命周期规则
+- 高频报错就那三个：签名不匹配（查时间）、域名风格、时间偏移
+- bucket 分片按每片 10 万对象规划，建的时候就设够，别事后 reshard
+- 每个 bucket 都配上「7 天清理未完成分段上传」的生命周期规则

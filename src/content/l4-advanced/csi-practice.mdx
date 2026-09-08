@@ -1,6 +1,6 @@
 ## 这一节要做什么
 
-把后端存储真正接进 K8s，跑通「PVC → Pod → 写数据 → 快照 → 恢复」的完整闭环。分三部分：ceph-csi、gpfs-csi、VolumeSnapshot。
+把后端存储真正接进 K8s，跑通「PVC → Pod → 写数据 → 快照 → 恢复」这条闭环。这一节分三块，ceph-csi、gpfs-csi、VolumeSnapshot。
 
 ## 一、ceph-csi-rbd
 
@@ -104,7 +104,7 @@ ceph fs authorize prod client.kubernetes-cephfs / rw
 
 ## 二、gpfs-csi
 
-GPFS CSI 的架构和 ceph-csi 有个关键差别：**它通过 GPFS GUI 的 REST API 来操作存储**，而不是直连存储协议。所以前置条件多一项：
+GPFS CSI 的架构和 ceph-csi 不一样，它通过 GPFS GUI 的 REST API 来操作存储，不直连存储协议。前置条件因此多一项：
 
 ```
 前置条件：
@@ -113,7 +113,7 @@ GPFS CSI 的架构和 ceph-csi 有个关键差别：**它通过 GPFS GUI 的 RES
 3. 所有 K8s 节点已挂载 GPFS 文件系统（例如 /mnt/gpfs1）
 ```
 
-部署方式有两种，选择会影响后续复杂度：
+部署方式有两种，选哪种直接影响后面运维的复杂度：
 
 | 方式 | 要求 | 特点 |
 | --- | --- | --- |
@@ -125,8 +125,8 @@ GPFS 的管理操作都是 `mm*` 命令，需要在集群节点上以 root 执�
 
 这带来两个运维影响：
 
-1. **GUI 挂了 CSI 就不能创建卷**（已挂载的卷不受影响）—— GUI 成了一个需要监控的关键组件
-2. GUI 的权限模型**不能按文件系统维度细分**，这正是上一节多租户方案里"独立文件系统方案用不了原生 GPFS CSI"的原因
+1. **GUI 挂了 CSI 就不能创建卷**（已挂载的卷不受影响），所以 GUI 得当成关键组件盯着
+2. GUI 的权限模型不能按文件系统维度细分，这正是上一节多租户方案里"独立文件系统方案用不了原生 GPFS CSI"的原因
 </Callout>
 
 ## 三、VolumeSnapshot
@@ -158,7 +158,7 @@ deletionPolicy: Delete
 
 ### 端到端验证
 
-这套流程建议亲手跑一遍，它能一次性验证所有环节：
+建议你亲手跑一遍，全链路的问题一次都能暴露出来：
 
 ```bash
 # 1. 创建 PVC 并写入数据
@@ -209,11 +209,11 @@ kubectl exec -it restore-pod -- cat /data/marker.txt
 ```
 
 <Callout type="warn" title="快照恢复出来的是新 PVC，不是原地回滚">
-K8s 的 VolumeSnapshot 恢复语义是：**用快照作为数据源创建一个新卷**。原来的 PVC 不受影响。
+K8s 的 VolumeSnapshot 恢复语义是用快照作为数据源创建一个新卷，原来的 PVC 不受影响。
 
-所以恢复流程通常是：从快照建新 PVC → 修改 Deployment 指向新 PVC → 重启 Pod。这个流程要提前演练并写进 SOP，不要等真出事时才第一次做。
+恢复流程通常是：从快照建新 PVC → 修改 Deployment 指向新 PVC → 重启 Pod。这流程要提前演练并写进 SOP，别等真出事时才第一次做。
 
-另外提醒和前面几节一致：**快照与源数据在同一套存储上，不能替代异地备份**。
+另外提醒和前面几节一致，快照与源数据在同一套存储上，替代不了异地备份。
 </Callout>
 
 <Callout type="tip" title="CSI 接入的通用排障顺序">
@@ -237,7 +237,7 @@ K8s 的 VolumeSnapshot 恢复语义是：**用快照作为数据源创建一个�
     { text: '把所有 K8s 节点改成 RHEL', feedback: '客户端节点的 OS 要求不像 ECE 存储节点那么严格。' },
     { text: '什么都不用，CSI 会自动搭建', feedback: 'CSI 只是接口层，不会替你部署存储。' },
   ]}
-  explain={<>GPFS CSI 通过 GUI 的 REST API 操作存储，所以 GUI 是硬依赖且需要纳入监控——GUI 挂了就无法创建新卷。同时节点必须已挂载文件系统。</>}
+  explain={<>GPFS CSI 通过 GUI 的 REST API 操作存储，所以 GUI 是硬依赖，得纳入监控，GUI 挂了就没法创建新卷。同时节点必须已挂载文件系统。</>}
 />
 
 <Quiz
@@ -267,11 +267,11 @@ K8s 的 VolumeSnapshot 恢复语义是：**用快照作为数据源创建一个�
   explain={<>「恢复出新卷 + 切换工作负载」这个语义如果不提前知道，真出事时会手忙脚乱。演练一次的成本远低于事故时摸索的成本。</>}
 />
 
-## 这节课的落点
+## pool 名、GUI 依赖与快照恢复链
 
-- ceph-csi 的三处 pool 名（建池 / caps / StorageClass）必须完全一致
-- CephFS 的 SC 多一项 `fsName`，且支持 RWX
-- GPFS CSI 依赖 GUI 的 REST API，GUI 是需要监控的关键组件
-- 快照需要 CRD + snapshot-controller + csi-snapshotter sidecar 三件套
-- K8s 快照恢复出的是新 PVC，要提前演练切换流程
-- 通用排障分界：创建卷看 controller，挂载卷看对应节点的 node plugin
+- ceph-csi 那三处 pool 名（建池 / caps / StorageClass）必须完全一致
+- CephFS 的 SC 多一项 `fsName`，RWX 也是靠它
+- GPFS CSI 走 GUI 的 REST API，GUI 一挂就得进监控
+- 快照得把 CRD、snapshot-controller 和 csi-snapshotter sidecar 三件套都装上
+- K8s 快照恢复出的是新 PVC，切换流程演练过再上
+- 排障时先分清阶段，卷创建看 controller，挂载看 Pod 所在节点的 node plugin

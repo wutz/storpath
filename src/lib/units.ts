@@ -1,4 +1,4 @@
-/** 容量/带宽单位换算，口径与 storplan 保持一致（1 TB = 0.909 TiB） */
+/** 容量、带宽单位换算。口径跟 storplan 对齐（1 TB = 0.909 TiB） */
 
 export const TB_TO_TIB = 0.909
 

@@ -1,13 +1,13 @@
 /**
  * CRUSH 映射的教学级模拟。
  *
- * 不是 Ceph 的真实 CRUSH 实现（真实版本有 straw2、权重、调整因子、重试等），
- * 但保留了三个最关键的性质，足以让人建立正确直觉：
+ * 不是 Ceph 的真实 CRUSH 实现（真实版本还有 straw2、权重、调整因子、重试等），
+ * 但保留了三个要紧的性质，够你建立正确直觉：
  *   1. object → PG 是哈希取模，pg_num 一变映射全变
- *   2. PG → OSD 是纯计算，无需查表，同样的输入必得同样的输出
+ *   2. PG → OSD 是纯计算，不用查表，同样的输入必得同样的输出
  *   3. 故障域约束：副本必须落在不同的 host / rack
  *
- * 所有哈希都是确定性的，因此 SSR 与客户端渲染结果一致。
+ * 哈希都是确定性的，所以 SSR 和客户端渲染结果一致。
  */
 
 /** FNV-1a，32 位 */
@@ -42,7 +42,7 @@ export const RACKS = [...new Set(CLUSTER.map((o) => o.rack))]
 export type FailureDomain = 'osd' | 'host' | 'rack'
 
 export const FAILURE_DOMAIN_LABEL: Record<FailureDomain, string> = {
-  osd: 'osd（同主机也可能）',
+  osd: 'osd（可能同主机）',
   host: 'host（默认）',
   rack: 'rack',
 }
@@ -53,7 +53,7 @@ function bucketOf(osd: OsdNode, domain: FailureDomain): string {
   return `osd.${osd.id}`
 }
 
-/** 模拟 straw：为每个候选算一个确定性得分，取最高的若干个 */
+/** 模拟 straw，给每个候选算一个确定性得分，取最高的几个 */
 function straw(pgId: number, key: string): number {
   return fnv1a(`${pgId}:${key}`)
 }
@@ -65,13 +65,13 @@ export interface CrushResult {
   pgSeq: number
   /** 展示用的 PG 名，形如 3.1f */
   pgName: string
-  /** 按 crushmap 算出的应然分布 */
+  /** 按 crushmap 算出来的理想分布 */
   up: number[]
   /** 剔除 down 的 OSD 后实际生效的分布 */
   acting: number[]
-  /** up 与 acting 不一致，即处于 remapped 状态 */
+  /** up 和 acting 不一致，就是 remapped 了 */
   remapped: boolean
-  /** 因故障域不足而凑不齐副本数 */
+  /** 故障域不够，凑不齐副本数 */
   undersized: boolean
 }
 
@@ -113,7 +113,7 @@ export function crushMap(input: CrushInput): CrushResult {
       .map((o) => ({ id: o.id, score: straw(pgSeq, `osd.${o.id}`) }))
       .sort((a, b) => b.score - a.score)[0].id
 
-  // 先把存活的占位记下来，避免替补时又选到别的副本已占的故障域
+  // 先记下还活着的占位，替补时别撞上别的副本已经占了的故障域
   const kept = up.map((id) => (downSet.has(id) ? null : id))
   const chosen = new Set(kept.filter((id): id is number => id !== null))
   const usedBuckets = new Set(
@@ -138,7 +138,7 @@ export function crushMap(input: CrushInput): CrushResult {
         !chosen.has(o.id),
     )
 
-    // 原故障域整个没了：换一个还没被占用的故障域
+    // 原故障域整个没了，换个还没被占用的故障域
     if (!candidates.length) {
       candidates = CLUSTER.filter(
         (o) =>
@@ -148,7 +148,7 @@ export function crushMap(input: CrushInput): CrushResult {
       )
     }
 
-    // 仍然找不到 → 这个副本位置空缺，PG 进入 undersized
+    // 还是找不到 → 这个副本位就空着，PG 进入 undersized
     if (!candidates.length) continue
 
     const pick = best(candidates)
@@ -168,7 +168,7 @@ export function crushMap(input: CrushInput): CrushResult {
   }
 }
 
-/** 把一批对象名映射到 PG，用于展示 pg_num 变化带来的影响面 */
+/** 把一批对象名映射到 PG，用来看 pg_num 一变有多少对象受影响 */
 export function mapBatch(objectNames: string[], pgNum: number): number[] {
   return objectNames.map((name) => fnv1a(name) % pgNum)
 }

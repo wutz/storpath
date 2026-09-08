@@ -1,6 +1,6 @@
 /**
- * 学习进度 —— 存在浏览器 localStorage，无账号体系。
- * 用 useSyncExternalStore 保证 SSR 时返回稳定的空状态，避免水合不一致。
+ * 学习进度存在浏览器 localStorage，没有账号体系。
+ * 用 useSyncExternalStore 保证 SSR 时返回稳定的空状态，免得水合对不上。
  */
 import { useSyncExternalStore } from 'react'
 import { RENAMED_TRACKS } from './curriculum'
@@ -8,15 +8,15 @@ import { RENAMED_TRACKS } from './curriculum'
 const STORAGE_KEY = 'storpath:progress:v1'
 
 export interface ProgressState {
-  /** 已完成课程，元素为 `${trackId}/${lessonId}` */
+  /** 已完成课程，元素是 `${trackId}/${lessonId}` */
   done: string[]
-  /** 已答对的检查点，元素为 `${trackId}/${lessonId}#${quizId}` */
+  /** 已答对的检查点，元素是 `${trackId}/${lessonId}#${quizId}` */
   quiz: string[]
 }
 
 const EMPTY: ProgressState = { done: [], quiz: [] }
 
-/** 阶段改名后，老访客的本地进度按前缀迁移一次，不然打开站点会发现全部清零 */
+/** 阶段改名后，老访客的本地进度按前缀迁移一次，不然打开站点会看到进度全清零 */
 function migrate(keys: string[]): string[] {
   return keys.map((key) => {
     const slash = key.indexOf('/')
@@ -50,7 +50,7 @@ function write(next: ProgressState) {
     try {
       window.localStorage.setItem(STORAGE_KEY, JSON.stringify(next))
     } catch {
-      // 隐私模式下写入失败，内存态仍然可用
+      // 隐私模式下写不进去，内存里的状态还能用
     }
   }
   listeners.forEach((fn) => fn())

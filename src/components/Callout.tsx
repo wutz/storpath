@@ -3,8 +3,8 @@ import type { ReactNode } from 'react'
 type Tone = 'note' | 'tip' | 'warn' | 'trap'
 
 /*
- * 四种语气各占一个语义色，颜色只落在细边和标签上，正文一律走中性色。
- * 整块铺底色会把课文切得七零八落。
+ * 四种语气各占一个语义色，颜色只落在细边和标签上，正文用中性色。
+ * 整块铺底色会把版面切得七零八落。
  */
 const TONE: Record<Tone, { label: string; rule: string; head: string; icon: string }> = {
   note: {
@@ -26,7 +26,7 @@ const TONE: Record<Tone, { label: string; rule: string; head: string; icon: stri
     icon: '!',
   },
   trap: {
-    label: '新人常踩的坑',
+    label: '常踩的坑',
     rule: 'bg-danger',
     head: 'text-danger-deep',
     icon: '×',

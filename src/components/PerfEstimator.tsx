@@ -18,7 +18,7 @@ const DEFAULTS: PerfInput = {
   profileId: 'replica-3',
 }
 
-/** 各资源上限横条：瓶颈那条用品牌色点出来，其余保持中性 */
+/** 各资源上限横条：瓶颈那条用品牌色标出，其余保持中性 */
 function LimitBars({ limits, bottleneck }: { limits: PerfLimit[]; bottleneck: PerfLimit }) {
   const max = Math.max(...limits.map((l) => l.valueMBps))
   return (
@@ -82,7 +82,7 @@ export function PerfEstimator() {
           </div>
 
           <div className="grid grid-cols-2 gap-3">
-            <Field label="单盘写带宽" hint="MB/s，用稳态实测值">
+            <Field label="单盘写带宽" hint="MB/s，填稳态实测值">
               <input
                 type="number"
                 min={1}
@@ -112,7 +112,7 @@ export function PerfEstimator() {
                 className={inputCls}
               />
             </Field>
-            <Field label="cluster 网 Gbps/节点" hint="填 0 表示单网共用">
+            <Field label="cluster 网 Gbps/节点" hint="填 0 按单网共用算">
               <input
                 type="number"
                 min={0}
@@ -141,13 +141,13 @@ export function PerfEstimator() {
         <div className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <Stat
-              label="预估写带宽"
+              label="估算写带宽"
               size="md"
               value={formatBW(result.write.estimateMBps)}
               note={`瓶颈：${result.write.bottleneck.label}`}
             />
             <Stat
-              label="预估读带宽"
+              label="估算读带宽"
               size="md"
               value={formatBW(result.read.estimateMBps)}
               note={`瓶颈：${result.read.bottleneck.label}`}

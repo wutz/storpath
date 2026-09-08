@@ -4,13 +4,13 @@
 
 > **[P2] ceph-prod 集群 health 状态变更：HEALTH_OK → HEALTH_WARN**
 
-你是这套集群的值班人。业务侧暂时没有报障，但告警必须在 30 分钟内给出初步结论。这套集群你只知道个大概：36 个 OSD，3 台存储节点，同时提供 RBD 和 CephFS。
+你是这套集群的值班人。业务侧暂时没有报障，但告警必须在 30 分钟内给出初步结论。这套集群你也只知道个大概，36 个 OSD，3 台存储节点，同时提供 RBD 和 CephFS。
 
-现在开始排查。下面是一个模拟终端，你已经登录到 `ceph-node1`（MON 节点之一）。
+现在开始排查。模拟终端已经给你开好了，你登录在 `ceph-node1`（MON 节点之一）上。
 
 <Callout type="tip" title="排查纪律：从全局到局部">
-新人最容易犯的错，是直接 `ssh` 到某台机器上翻日志。正确的顺序是：先看集群全局状态 → 再看告警明细 → 再定位到具体 OSD/主机 → 最后才登机器看硬件层证据。
-反过来做，你会在错误的机器上浪费半小时。
+新人最容易犯的错，是直接 `ssh` 到某台机器上翻日志。先看集群全局状态，再看告警明细，接着定位到具体 OSD 或主机，最后才登机器看硬件层证据。
+顺序反过来，你会在错误的机器上浪费半小时。
 </Callout>
 
 <Terminal
@@ -195,9 +195,9 @@ ok`,
   ]}
 />
 
-## 复盘：这次告警的完整结论
+## 复盘一下这次告警的完整结论
 
-排查完成后，值班记录要写全四段：结论、依据、动作、风险。
+排查完成后，值班记录得写全四段，结论、依据、动作、风险一样都不能少。
 
 **结论**：`ceph-node3` 上的 `osd.14` 对应的物理盘 `/dev/sdd`（SN: S6CVNE0T412938）介质损坏，已被固件置为只读，OSD 进程因 BlueStore 读取失败而反复崩溃退出。
 
@@ -213,7 +213,7 @@ ok`,
 
 **风险与次生问题**（最容易漏的部分）：
 - `osd.29` 已达 86%，进入 nearfull。osd.14 的数据迁移会进一步推高其它 OSD 的水位，有触发 `backfillfull` 甚至 `full`（拒绝写入）的风险。迁移前应先确认容量余量，必要时限速回填。
-- 集群 OSD 平均 `Percentage Used` 需要普查。这批盘同批次采购、同期上线，一块到寿命意味着其它盘也接近，这是典型的批次性故障风险。
+- 集群 OSD 的平均 `Percentage Used` 需要普查。这批盘同批次采购、同期上线，一块到寿命，其它盘也差不多该到点了，典型的批次性故障风险。
 - 当前 61 个 PG 处于 `undersized+degraded`，副本数不足。在恢复完成前，集群的容错额度打了折。
 
 <Callout type="warn" title="别急着敲 ceph osd out">
@@ -222,31 +222,31 @@ ok`,
 
 <Quiz
   id="quest-1"
-  question="本次故障中，判断「盘确实坏了」最有力的证据是哪一条？"
+  question="这次故障里，哪条证据最能说明「盘确实坏了」？"
   options={[
-    { text: 'ceph -s 显示 HEALTH_WARN', feedback: '这只是告警入口，不构成任何硬件结论。' },
-    { text: 'osd.14 状态为 down', feedback: 'OSD down 的原因有很多：进程 OOM、网络不通、配置错误，不能直接推出盘坏。' },
+    { text: 'ceph -s 显示 HEALTH_WARN', feedback: '告警入口而已，说明不了硬件坏没坏。' },
+    { text: 'osd.14 状态为 down', feedback: 'OSD down 的原因很多，进程 OOM、网络不通、配置错误都有可能，推不出盘坏。' },
     { text: 'dmesg 的 medium error 加上 SMART 自检 FAILED', correct: true },
-    { text: '61 个 PG 处于 degraded 状态', feedback: '这是 OSD down 的后果，不是原因。' },
+    { text: '集群里有 61 个 PG 处于 degraded', feedback: 'PG 掉副本是 OSD down 之后的表现，不是原因。' },
   ]}
   explain={<>
-    Ceph 层的信息只能告诉你"哪个 OSD 不工作了"，硬件结论必须来自内核日志和 SMART。
-    换盘工单需要盘的序列号和 SMART 报告作为依据，光贴一句"osd.14 down"是不会被受理的。
+    Ceph 层只能告诉你「哪个 OSD 不工作了」，要下硬件结论，还得看内核日志和 SMART。
+    提换盘工单时，盘的序列号和 SMART 报告是硬要求，光贴一句「osd.14 down」没人受理。
   </>}
 />
 
 <Quiz
   id="quest-2"
-  question="在执行换盘流程之前，必须先确认哪些事情？（多选）"
+  question="换盘流程动手之前，哪些事必须先确认？（多选）"
   options={[
     { text: '集群剩余容量能否吃下 osd.14 数据的重新分布', correct: true },
     { text: '当前水位最高的 OSD 距离 backfillfull 还有多少余量', correct: true },
-    { text: '其它同批次盘的 SMART 寿命状态', correct: true },
+    { text: '其它同批次的盘，SMART 寿命还剩多少', correct: true },
     { text: '必须先把集群升级到最新版本', feedback: '换盘和版本升级是两件独立的事，不要在故障处理中夹带变更。' },
   ]}
   explain={<>
-    换盘的风险不在换盘本身，而在它触发的数据迁移。迁移会推高所有 OSD 的水位，
-    在 nearfull 状态下操作前必须先算清账。同批次盘的普查则能帮你预判下一次故障。
+    换盘真正的风险不在换盘本身，而在它触发的那次数据迁移。迁移会推高所有 OSD 的水位，
+    在 nearfull 状态下动手之前得先把账算清。同批次盘普查一遍，也能帮你预判下一次故障。
   </>}
 />
 
@@ -255,9 +255,9 @@ ok`,
   question="ceph -s 里 osd 那一行显示「36 osds: 35 up, 36 in」。这里的 in 是什么意思？"
   options={[
     { text: '36 个 OSD 进程都在运行', feedback: '进程运行状态用 up/down 表示。' },
-    { text: '36 个 OSD 仍然参与数据分布，包括那个已经 down 的', correct: true },
-    { text: '36 个 OSD 都已经完成数据恢复', feedback: 'in 与恢复进度无关。' },
-    { text: '36 个 OSD 都在同一个故障域内', feedback: 'in 与故障域无关。' },
+    { text: '包括那个已经 down 的，照样参与数据分布', correct: true },
+    { text: '所有 OSD 都已经完成数据恢复', feedback: 'in 与恢复进度无关。' },
+    { text: '它们全落在同一个故障域内', feedback: 'in 与故障域无关。' },
   ]}
   explain={<>
     <code>up/down</code> 说的是进程活没活，<code>in/out</code> 说的是要不要给它分配数据。
@@ -266,9 +266,9 @@ ok`,
   </>}
 />
 
-## 排查顺序和换盘前的容量账
+## 排查顺序怎么走，换盘前的容量账怎么算
 
-- 一层层往下走：`ceph -s` → `ceph health detail` → `ceph osd tree` → 进程日志 → 内核日志 → SMART
+- 排查要一层层往下走，`ceph -s` → `ceph health detail` → `ceph osd tree` → 进程日志 → 内核日志 → SMART
 - 告警最多指到 OSD 这一层，硬件结论得由 dmesg 和 SMART 来给
 - 根因之外还得报次生风险，本例就是容量水位，漏了等于没排查完
 - 任何会触发数据迁移的命令，先把容量算清再敲

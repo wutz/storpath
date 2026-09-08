@@ -4,13 +4,13 @@
 
 > CephFS 是不是有问题？我们的训练任务卡在读数据那一步半小时了，`ls` 一个目录要等三十秒。但是同事拷一个大文件又很快。
 
-线索就在这句话里：大文件快，`ls` 慢。上一阶段学过，这两件事走的是完全不同的路径。
+线索就在这句话里。大文件快、`ls` 慢，这两件事上一阶段学过，走的是完全不同的路径。
 
 <Callout type="tip" title="先做这个区分，能省掉一半排查时间">
 - `ls` / `stat` / `open` / `create` → 元数据路径 → MDS + metadata pool
 - 读写文件内容 → 数据路径 → 客户端直连 OSD + data pool
 
-数据面正常而元数据面慢，说明问题在 MDS 或 metadata pool，不用去看 OSD 的带宽。
+数据面正常而元数据面慢，问题就落在 MDS 或 metadata pool 上，OSD 的带宽不用看。
 </Callout>
 
 <Terminal
@@ -140,7 +140,9 @@ prod.ceph-node2.ghijkl
 
 ## 复盘
 
-**结论**：`gpu-node-07` 和 `gpu-node-08` 上的训练任务用 48 个 worker 并发遍历一个含 128 万文件的单目录，产生约 9000 req/s 的元数据请求。MDS 的 `mds_cache_memory_limit` 仍是默认 4GB，缓存被打满（inode 数顶在 4096k），导致大量请求需要回 metadata pool 读取，进而出现 slow request 与日志段积压。
+根子在客户端这一侧。`gpu-node-07` 和 `gpu-node-08` 上的训练任务用 48 个 worker 并发遍历一个含 128 万文件的单目录，产生约 9000 req/s 的元数据请求。
+
+MDS 的 `mds_cache_memory_limit` 仍是默认 4GB，缓存被打满（inode 数顶在 4096k），大量请求只能回 metadata pool 读取，于是出现 slow request 与日志段积压。
 
 **依据**：
 
@@ -150,7 +152,7 @@ prod.ceph-node2.ghijkl
 4. `client ls` 显示两个客户端占 92% 的 cap → 压力高度集中
 5. 客户端侧已核实，单目录 128 万文件 × 48 并发 worker
 
-处置分三层：存储侧只能缓解，治本要靠应用侧。
+处置上分三层，存储侧只能缓解，治本还得靠应用侧。
 
 ```bash
 # ── 立即缓解（存储侧）──
@@ -175,9 +177,9 @@ setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/datasets
 ```
 
 <Callout type="warn" title="存储侧的调优只能缓解，不能解决">
-把缓存从 4GB 调到 32GB，能撑住 8 倍的元数据量。但训练集群一扩容、数据集一变大，同样的问题还会再来，而且缓存上限卡在单台机器的内存上，加节点也扩不上去。
+把缓存从 4GB 调到 32GB，能撑住 8 倍的元数据量。但训练集群一扩容、数据集一变大，同样的问题还会再来。
 
-这就是 storplan 选型表里那句「CephFS 元数据缓存受节点内存限制，不足时性能锐减，不建议应用于 AI 场景」的实际含义。排查手法只是顺带学会的，真正值钱的是弄明白那句结论是怎么来的。
+缓存上限卡在单台机器的内存上，加节点也扩不上去。storplan 选型表里那句「CephFS 元数据缓存受节点内存限制，不足时性能锐减，不建议应用于 AI 场景」，说的就是这个。排查手法只是顺带学会的，真正值钱的是弄明白那句结论是怎么来的。
 </Callout>
 
 <Callout type="tip" title="值班时怎么跟业务方沟通">
@@ -193,39 +195,39 @@ setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/datasets
 
 <Quiz
   id="qmds-1"
-  question="用户反馈「ls 很慢但拷大文件很快」。这个现象最先能排除什么？"
+  question="用户反馈「ls 很慢但拷大文件很快」，这个现象最先能排除什么？"
   options={[
-    { text: '排除数据路径问题：OSD、data pool、客户端带宽', correct: true },
-    { text: '排除元数据问题', feedback: '恰恰相反，这正指向元数据。' },
-    { text: '排除网络问题', feedback: '还不能完全排除，但数据面正常确实降低了网络的嫌疑。' },
+    { text: 'OSD、data pool、客户端带宽这条数据路径可以先排除', correct: true },
+    { text: '元数据路径也可以排除', feedback: '反了，这个现象指向的正是元数据。' },
+    { text: '网络问题能一并排除', feedback: '还不能完全排除，数据面正常只是降低了网络的嫌疑。' },
     { text: '什么都排除不了', feedback: '这个现象的指向性非常强。' },
   ]}
   explain={<>
     ls/stat 走 MDS + metadata pool，读写文件内容走 OSD + data pool。
-    两者表现分化，排查范围立刻就能砍掉一半，这是 CephFS 排障里最有用的一个判断。
+    两者表现分化，排查范围立刻砍掉一半，CephFS 排障里最有用的一招就是这个判断。
   </>}
 />
 
 <Quiz
   id="qmds-2"
-  question="ceph fs status 显示 DNS 和 INOS 都恰好是 4096k。这说明什么？"
+  question="ceph fs status 里 DNS 和 INOS 都恰好卡在 4096k，最可能的原因是什么？"
   options={[
-    { text: '文件系统里刚好有 409.6 万个文件', feedback: '两个指标同时卡在一个整数上，是被限制而非巧合。' },
+    { text: '文件系统里刚好有 409.6 万个文件', feedback: '两个指标同时卡在同一个整数上，更像是被限制，不是巧合。' },
     { text: 'MDS 缓存已达上限，更多元数据无法缓存', correct: true },
     { text: 'MDS 出现内存泄漏', feedback: '达到配置上限是预期行为，不是泄漏。' },
     { text: '元数据池容量满了', feedback: '池容量满会有独立的告警。' },
   ]}
-  explain={<>缓存条目数顶在整数上是被 mds_cache_memory_limit 卡住的典型特征。缓存打满后请求要回 metadata pool，延迟成倍上升。</>}
+  explain={<>缓存条目数顶在一个整数上，基本就是被 mds_cache_memory_limit 卡住了。缓存打满之后，请求只能回 metadata pool，延迟成倍上升。</>}
 />
 
 <Quiz
   id="qmds-3"
-  question="定位到两个客户端占了 92% 的 cap 之后，下面哪些是合理的后续动作？（多选）"
+  question="已经定位到两个客户端占了 92% 的 cap，接下来哪些动作是合理的？（多选）"
   options={[
     { text: '登上这两台机器确认它们在跑什么负载', correct: true },
     { text: '调大 MDS 缓存作为立即缓解', correct: true },
     { text: '建议应用侧把海量小文件打包成大文件', correct: true },
-    { text: '直接把这两个客户端踢下线', feedback: '这是业务负载不是攻击，粗暴驱逐会造成训练任务失败，且没解决问题。' },
+    { text: '直接把这两个客户端踢下线', feedback: '这是业务负载，不是攻击。粗暴驱逐会让训练任务直接失败，问题还在。' },
   ]}
   explain={<>
     缓解、治本、长期架构建议这三层都得给。
@@ -233,11 +235,11 @@ setfattr -n ceph.dir.pin -v 1 /mnt/cephfs/datasets
   </>}
 />
 
-## 训练机压满 MDS 缓存的那笔元数据账
+## 训练机压满 MDS 缓存，那笔元数据账怎么算
 
 - 数据快、元数据慢，就别再翻 OSD 了，问题在 MDS 和 metadata pool 这一侧
 - `MDS_SLOW_REQUEST` 和 `MDS_TRIM` 基本一起出现，看到就是 MDS 扛不住了
 - 缓存条目数卡在一个整数上，说明 `mds_cache_memory_limit` 到顶了
 - 找压力源不用一个个猜，`ceph tell mds.<name> client ls` 按 `num_caps` 排一下就有
-- 处置分三层：存储侧先缓解，应用侧治本，架构层再谈选型
+- 处置分三层，存储侧先缓解，应用侧治本，架构层再谈选型
 - 海量小文件配 CephFS 是结构性错配，调参只是把问题往后推

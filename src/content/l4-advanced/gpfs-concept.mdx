@@ -1,4 +1,4 @@
-## 换一套术语，同一批问题
+## 换一套术语，底下的问题还是同一批
 
 GPFS（现名 IBM Storage Scale，曾用名 Spectrum Scale）1998 年就有了，是 IBM 的共享磁盘并行集群文件系统，企业级高性能场景里用得很广。
 
@@ -27,7 +27,7 @@ GPFS 把元数据分布到所有节点，用分布式令牌（token）机制协�
 - 代价是每个客户端都要参与集群协议，必须安装 GPFS 客户端软件（不像 NFS 那样零依赖）
 </Callout>
 
-## SNC 模式与 ECE
+## SNC 模式怎么和 ECE 搭上关系
 
 GPFS 有多种部署形态，当前高性能场景主流是 **SNC（Shared Nothing Cluster）**。每台服务器有自己的本地盘，靠软件做跨节点冗余。
 
@@ -55,7 +55,7 @@ GPFS 有多种部署形态，当前高性能场景主流是 **SNC（Shared Nothi
 这不是建议，是硬性要求，对采购的影响很直接：扩容时必须买到和原来一模一样的机型，否则只能新建一个 RG。所以规划阶段就要确认机型的可采购周期。
 </Callout>
 
-## ECE 支持的纠删码
+## ECE 能选哪些纠删码
 
 ```
 16+2P、16+3P、8+2P、8+3P、4+2P、4+3P
@@ -71,7 +71,7 @@ GPFS 有多种部署形态，当前高性能场景主流是 **SNC（Shared Nothi
 | 6 ~ 9 | 8+3P / 4+2P / 4+3P |
 | 10+ | 8+2P / 8+3P / 4+2P / 4+3P |
 
-## quorum：规则更细，原理相同
+## quorum 的规则更细，原理还是那套
 
 单个恢复组时的官方规则：
 
@@ -85,7 +85,7 @@ scale-out 节点数 ≥ 7      → quorum 节点数 7
 
 失去 quorum 的后果比 Ceph 更剧烈：**GPFS 会卸载整个集群上的文件系统**，直到 quorum 重建，然后执行文件系统恢复。所以 quorum 节点的稳定性是 GPFS 运维的头号关注点。
 
-## 多集群：owning 与 accessing
+## 多集群的 owning 和 accessing
 
 HPC 里 GPFS 用得多，多集群这个能力是主要原因之一。
 
@@ -112,7 +112,7 @@ accessing cluster（访问集群）
 同时给 root fileset 设置 QoS 限制，防止用户误用或滥用。官方文档里明确给出了这个缓解手段。
 </Callout>
 
-## 常用命令速查
+## 命令都从 mm 开头，常用的就这些
 
 GPFS 的命令全部以 `mm` 开头（multi-media 的历史遗留）：
 
@@ -141,19 +141,19 @@ mmshutdown -a && mmstartup -a
 ```
 
 <Callout type="tip" title="mmlsconfig 与 mmdiag --config 的区别">
-`mmlsconfig` 显示的是**配置里写了什么**，`mmdiag --config` 显示的是**当前进程实际生效的值**。
+`mmlsconfig` 显示的是配置里写了什么，`mmdiag --config` 显示的是**当前进程实际生效的值**。
 
-很多参数改完需要重启守护进程才生效。排查"为什么改了没效果"时，先用 `mmdiag --config` 确认生效值，能省很多时间。
+很多参数改完需要重启守护进程才生效。排查「为什么改了没效果」时，先用 `mmdiag --config` 确认生效值，能省很多时间。
 </Callout>
 
 <Quiz
   id="gpfsc-1"
-  question="为什么 GPFS 在海量小文件场景通常优于 CephFS？"
+  question="海量小文件场景，GPFS 通常比 CephFS 强在哪？"
   options={[
-    { text: 'GPFS 的磁盘速度更快', feedback: '用的是同样的硬件。' },
+    { text: 'GPFS 的磁盘速度更快', feedback: '两边用的是一样的硬件。' },
     { text: 'GPFS 把元数据分布到所有节点，不受单机内存约束', correct: true },
-    { text: 'GPFS 不需要网络', feedback: '它同样是分布式系统，依赖高速网络。' },
-    { text: 'GPFS 用了纠删码', feedback: 'EC 与元数据能力无关，而且 EC 对小 I/O 是不利的。' },
+    { text: 'GPFS 不需要网络', feedback: '它同样是分布式系统，一样吃高速网络。' },
+    { text: 'GPFS 用了纠删码', feedback: 'EC 跟元数据能力没关系，而且 EC 对小 I/O 本来就不友好。' },
   ]}
   explain={<>
     CephFS 的元数据能力上限受单个 MDS 的内存约束，缓存不足时性能断崖下跌。
@@ -163,12 +163,12 @@ mmshutdown -a && mmstartup -a
 
 <Quiz
   id="gpfsc-2"
-  question="一套 ECE 集群有 5 个存储节点，按官方推荐应该选哪种冗余方案？"
+  question="一套 ECE 集群有 5 个存储节点，按官方推荐该选哪种冗余方案？"
   options={[
-    { text: '8+2P，效率最高', feedback: '8+2P 需要 10 个以上节点。' },
+    { text: '8+2P，效率最高', feedback: '8+2P 得上到 10 个节点。' },
     { text: '4+3P 或 3WayReplication', correct: true },
-    { text: '16+3P', feedback: '需要更多节点。' },
-    { text: '任意方案都可以', feedback: '节点数直接限制了可选方案。' },
+    { text: '16+3P', feedback: '16+3P 更是要一大批节点才凑得齐。' },
+    { text: '任意方案都可以', feedback: '节点数直接卡住了可选范围。' },
   ]}
   explain={<>官方推荐：3 节点用 3WayReplication，4~5 节点用 4+3P 或 3WayReplication，6~9 节点可选 8+3P/4+2P/4+3P，10 节点以上才能上 8+2P。规律和 Ceph 的 EC 完全一致。</>}
 />
@@ -178,11 +178,11 @@ mmshutdown -a && mmstartup -a
   question="做 GPFS 多租户隔离时，下面哪些做法是必要的？（多选）"
   options={[
     { text: '为每个租户创建独立的 fileset，不要把数据放在 root fileset', correct: true },
-    { text: '用 mmauth 精确授权每个访问集群可见哪些 fileset', correct: true },
+    { text: '每个访问集群能看到哪些 fileset，得用 mmauth 逐一授权', correct: true },
     { text: '给 root fileset 设置 QoS 限制，防止误用滥用', correct: true },
-    { text: '所有租户共用 root fileset，靠目录权限隔离', feedback: 'root fileset 对所有访问集群始终可见，这是设计行为，目录权限不构成集群级隔离。' },
+    { text: '所有租户共用 root fileset，靠目录权限隔离', feedback: 'root fileset 对所有访问集群始终可见，这是设计行为，目录权限撑不起集群级隔离。' },
   ]}
-  explain={<>「root fileset 始终可见」是 GPFS 多集群的一个硬性安全边界。隔离必须建立在独立 fileset + mmauth 授权之上。</>}
+  explain={<>「root fileset 始终可见」是 GPFS 多集群的一条硬性安全边界，隔离只能建立在独立 fileset 加 mmauth 授权之上。</>}
 />
 
 ## 别拿 Ceph 的经验去套 GPFS

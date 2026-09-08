@@ -2,7 +2,7 @@
 
 同样一套后端存储，走 NFS 接入和走 S3 接入，日常故障完全不是一回事。NFS 那边常见的是 D 状态进程和陈旧的文件句柄，S3 那边则是签名不匹配和分段上传残留。这一节把四类主流协议的机制和典型故障串一遍。
 
-## iSCSI 与多路径
+## iSCSI 怎么把远端块设备变成本地盘
 
 iSCSI 把 SCSI 命令封装进 TCP，让远端的块设备看起来像本地盘。
 
@@ -17,7 +17,7 @@ iscsiadm -m node -T iqn.2026-01.com.example:storage.disk1 -p 10.0.1.10 -l
 lsblk
 ```
 
-单条路径是单点。生产上通常配**多路径（multipath）**：同一个 LUN 通过两条网络路径暴露，客户端把它们识别成一个设备。
+单条路径是单点，生产上通常配多路径（multipath），让同一个 LUN 通过两条网络路径暴露，客户端把它们识别成一个设备。
 
 ```bash
 multipath -ll
@@ -38,7 +38,7 @@ size=2.0T features='1 queue_if_no_path' hwhandler='0' wp=rw
 排查时看到一堆 D 状态进程加上 `multipath -ll` 显示 `faulty`，就是这个组合。生产上要根据业务性质决定用 `queue_if_no_path`（要求绝不丢 I/O）还是 `no_path_retry fail`（宁可报错也要让进程能退出）。
 </Callout>
 
-## NFS：v3 与 v4 的关键差别
+## NFS 的 v3 和 v4 差在哪
 
 | | NFSv3 | NFSv4 |
 | --- | --- | --- |
@@ -54,11 +54,11 @@ mount -t nfs -o vers=4.1,hard,timeo=600,retrans=2,rsize=1048576,wsize=1048576 \
       10.0.1.20:/export/data /mnt/data
 ```
 
-关键参数：
+常用的挂载参数：
 
-- `hard` vs `soft`：`hard` 在服务端无响应时无限重试，进程卡住但数据不会错；`soft` 会超时返回错误，进程不卡，但应用可能拿到不完整的数据。存放重要数据一律用 `hard`
+- 挂载用 `hard` 还是 `soft`，决定服务端无响应时怎么办。`hard` 无限重试，进程卡住但数据不会错；`soft` 会超时返回错误，进程不卡，但应用可能拿到不完整的数据。存放重要数据一律用 `hard`
 - `rsize` / `wsize`：单次读写的大小，调大能显著提升大文件吞吐
-- `noatime`：同本地文件系统，减少无谓的元数据往返
+- `noatime` 跟本地文件系统一样，能减少无谓的元数据往返
 
 <Callout type="warn" title="Stale file handle 是怎么来的">
 `ls: cannot access: Stale file handle` 表示客户端手里的文件句柄在服务端已经失效，常见于服务端重新导出目录、文件系统被重新挂载，或者底层 inode 被重建。
@@ -66,9 +66,9 @@ mount -t nfs -o vers=4.1,hard,timeo=600,retrans=2,rsize=1048576,wsize=1048576 \
 处理方式是在客户端重新挂载（`umount -l` + `mount`）。要避免它，服务端导出配置里加 `fsid=<固定值>`，让句柄在重新导出后保持稳定。
 </Callout>
 
-## S3：签名、分段上传与一致性
+## 走 S3 接口绕不开的三件事
 
-S3 是对象存储的事实标准，下面三个机制绕不过去。
+S3 是对象存储的事实标准，签名、分段上传和路径风格这三处最容易出问题。
 
 ### 1. 签名（SigV4）
 
@@ -101,7 +101,7 @@ aws s3api put-bucket-lifecycle-configuration --bucket mybucket \
 「`aws s3 ls` 统计出来只有 40TB，但 `ceph df` 显示这个池用了 60TB」，最常见的原因就是残留的分段上传分片。给每个 bucket 都配上「7 天后自动清理未完成分段上传」的生命周期规则，这是自建对象存储的标准动作。
 </Callout>
 
-### 3. 路径风格
+### 3. 路径风格怎么选
 
 ```
 virtual-hosted 风格：https://mybucket.s3.example.com/key
@@ -110,7 +110,7 @@ path 风格：        https://s3.example.com/mybucket/key
 
 自建 RGW 用 virtual-hosted 风格需要配置泛域名 DNS（`*.s3.example.com`）。没配好就会出现「用 path-style 能通、用默认配置报错」的现象。很多客户端要显式加 `--endpoint-url` 并开启 `s3.addressing_style = path`。
 
-## NVMe-oF：把 NVMe 协议搬到网络上
+## NVMe-oF 把 NVMe 协议搬到了网络上
 
 iSCSI 封装的是老的 SCSI 命令集，协议开销大、队列模型落后。NVMe-oF 直接把 NVMe 的多队列模型延伸到网络上：
 
@@ -132,19 +132,19 @@ nvme list
   question="自建 RGW，客户端上传报 SignatureDoesNotMatch。最该先检查什么？"
   options={[
     { text: '客户端与 RGW 服务端的时间是否同步', correct: true },
-    { text: '重新生成一对 AK/SK', feedback: '密钥错误会报 InvalidAccessKeyId 之类的错，且这是在掩盖问题。' },
+    { text: '重新生成一对 AK/SK', feedback: '密钥错误会报 InvalidAccessKeyId 之类的错，重新生成只是在掩盖问题。' },
     { text: '扩容 RGW 实例', feedback: '与容量无关。' },
     { text: '重启 RGW', feedback: '重启不会改变时间偏差或签名配置。' },
   ]}
   explain={<>
-    SigV4 签名把时间戳算了进去，客户端与服务端时间差超过 15 分钟就必然失败。这是自建对象存储最高频的一类报错。
+    SigV4 签名把时间戳算了进去，客户端与服务端时间差超过 15 分钟就必然失败。自建对象存储里，这类报错出现得最多。
     其次才查 region、addressing style，以及反向代理是否改写了参与签名的头部。
   </>}
 />
 
 <Quiz
   id="proto-2"
-  question="NFS 客户端上一批进程卡在 D 状态，kill -9 无效。下面哪些是合理的分析？（多选）"
+  question="NFS 客户端上一批进程卡在 D 状态，kill -9 也没用。哪些分析是对的？（多选）"
   options={[
     { text: 'D 状态是不可中断睡眠，信号无法送达，所以 kill -9 不起作用', correct: true },
     { text: '如果挂载用了 hard 选项，服务端无响应时进程就会一直等待', correct: true },
@@ -152,7 +152,7 @@ nvme list
     { text: '把挂载参数改成 soft 就能彻底解决问题', feedback: 'soft 会让 I/O 超时返回错误，应用可能拿到不完整数据，对重要数据是更糟的选择。' },
   ]}
   explain={<>
-    hard 挂载 + 服务端故障 = 进程卡死，这是设计出来的行为，用可用性换数据正确性。
+    hard 挂载 + 服务端故障 = 进程卡死，协议本来就是这么设计的，拿可用性换数据正确性。
     方向是修服务端或网络，改挂载参数没用。同样的取舍也出现在 multipath 的 queue_if_no_path 上。
   </>}
 />
@@ -166,7 +166,7 @@ nvme list
     { text: '副本数配置错误', feedback: '池的用量本来就含冗余，但题目对比的是逻辑量与逻辑量。' },
     { text: '磁盘故障导致数据重复', feedback: '故障不会凭空产生数据。' },
   ]}
-  explain={<>用 <code>list-multipart-uploads</code> 确认，然后配置生命周期规则自动清理。这应该是每个 bucket 创建时的默认动作。</>}
+  explain={<>用 <code>list-multipart-uploads</code> 确认，然后配置生命周期规则自动清理。每个 bucket 创建时就该默认配上。</>}
 />
 
 ## 四个协议各自最容易翻车的地方

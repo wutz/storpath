@@ -5,7 +5,7 @@ import { CephCapacityPlanner } from './CephCapacityPlanner'
 import { PerfEstimator } from './PerfEstimator'
 import { CrushExplorer } from './CrushExplorer'
 
-/** MDX 正文里直接就能用这些交互组件，不用 import */
+/** MDX 正文里直接就能用的交互组件，不用 import */
 export const mdxComponents = {
   Callout,
   Quiz,

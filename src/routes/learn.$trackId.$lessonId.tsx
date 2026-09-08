@@ -53,7 +53,7 @@ function LessonPage() {
   const done = progress.done.includes(key)
   const passedCheckpoints = progress.quiz.filter((q) => q.startsWith(`${key}#`)).length
 
-  /* 只有一条路径，前后课就按 L0→L4 的全局顺序走 */
+  /* 全站只有一条路径，前后课按 L0→L4 的全局顺序排列 */
   const { prev, next } = getFlatNeighbors(track.id, lesson.id)
   const position =
     allLessons.findIndex((item) => lessonKey(item.track.id, item.lesson.id) === key) + 1
@@ -94,7 +94,7 @@ function LessonPage() {
         </header>
 
         <section className="mt-6 rounded-md bg-canvas px-5 py-4 shadow-card">
-          <h2 className="eyebrow">学完这节你能做到</h2>
+          <h2 className="eyebrow">本节目标</h2>
           <ul className="mt-2.5 space-y-1.5 text-sm leading-relaxed text-body">
             {lesson.objectives.map((objective) => (
               <li key={objective} className="flex gap-2.5">
@@ -159,7 +159,7 @@ function LessonPage() {
                 : 'bg-brand-600 text-white hover:bg-brand-700'
             }`}
           >
-            {done ? '✓ 已完成（点一下取消）' : '标记为已完成'}
+            {done ? '✓ 已完成（点击取消）' : '标记为已完成'}
           </button>
           {next ? (
             <Link
@@ -216,7 +216,7 @@ function LessonPage() {
   )
 }
 
-/** 顶部进度条：第几节，走了多远 */
+/** 顶部进度条：位置与进度 */
 function PathBanner({ position, stage }: { position: number; stage: string }) {
   const percent = Math.round((position / stats.lessonCount) * 100)
 
@@ -272,7 +272,7 @@ function OutlinePlaceholder({ outline }: { outline: string[] }) {
     <div className="rounded-md border border-dashed border-line-strong/50 bg-canvas px-5 py-5">
       <div className="flex flex-wrap items-center gap-2">
         <span className="rounded-xs bg-soft-2 px-2 py-0.5 text-xs text-body">正文还没写</span>
-        <span className="text-xs text-mute">下面是这节已经定稿的大纲</span>
+        <span className="text-xs text-mute">本节大纲已定稿</span>
       </div>
       <ol className="mt-4 space-y-2">
         {outline.map((item, index) => (

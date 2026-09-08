@@ -4,7 +4,7 @@
 
 ## 一、ceph-csi-rbd
 
-### 1. Ceph 侧准备
+### 1. 先把 Ceph 侧的池和用户建好
 
 ```bash
 # 创建专用池
@@ -24,7 +24,7 @@ ceph mon dump                # monitors 地址
 ceph auth get-key client.kubernetes   # userKey
 ```
 
-### 2. K8s 侧配置
+### 2. K8s 侧要配哪几样
 
 ```yaml
 # ConfigMap：告诉 CSI 去连哪个集群
@@ -76,7 +76,7 @@ volumeBindingMode: Immediate
 任何一处不一致，结果就是上一节演练里那个 `Permission denied`。接入时把这三处抄在一起对照一遍，能省掉一次排障。
 </Callout>
 
-### 3. CephFS 的差别
+### 3. CephFS 差在哪几处
 
 ```yaml
 apiVersion: storage.k8s.io/v1
@@ -94,7 +94,7 @@ reclaimPolicy: Retain
 allowVolumeExpansion: true
 ```
 
-CephFS 的用户权限也不一样：
+CephFS 的用户权限也不一样，得单独授权。
 
 ```bash
 ceph fs authorize prod client.kubernetes-cephfs / rw
@@ -113,7 +113,7 @@ GPFS CSI 的架构和 ceph-csi 不一样，它通过 GPFS GUI 的 REST API 来�
 3. 所有 K8s 节点已挂载 GPFS 文件系统（例如 /mnt/gpfs1）
 ```
 
-部署方式有两种，选哪种直接影响后面运维的复杂度：
+部署方式有两种，选哪种直接影响后面运维的复杂度。
 
 | 方式 | 要求 | 特点 |
 | --- | --- | --- |
@@ -123,10 +123,10 @@ GPFS CSI 的架构和 ceph-csi 不一样，它通过 GPFS GUI 的 REST API 来�
 <Callout type="note" title="为什么 GPFS CSI 要依赖 GUI">
 GPFS 的管理操作都是 `mm*` 命令，需要在集群节点上以 root 执行。CSI 驱动跑在容器里，不方便直接调这些命令，于是 IBM 让 CSI 走 GUI 提供的 REST API。
 
-这带来两个运维影响：
+这带来两个运维影响。
 
 1. **GUI 挂了 CSI 就不能创建卷**（已挂载的卷不受影响），所以 GUI 得当成关键组件盯着
-2. GUI 的权限模型不能按文件系统维度细分，这正是上一节多租户方案里"独立文件系统方案用不了原生 GPFS CSI"的原因
+2. GUI 的权限模型不能按文件系统维度细分，上一节多租户方案里「独立文件系统方案用不了原生 GPFS CSI」卡的就是这一点
 </Callout>
 
 ## 三、VolumeSnapshot
@@ -156,9 +156,9 @@ parameters:
 deletionPolicy: Delete
 ```
 
-### 端到端验证
+### 亲手跑一遍端到端
 
-建议你亲手跑一遍，全链路的问题一次都能暴露出来：
+建议你真跑一遍，全链路的问题一次都能暴露出来。
 
 ```bash
 # 1. 创建 PVC 并写入数据
@@ -213,11 +213,11 @@ K8s 的 VolumeSnapshot 恢复语义是用快照作为数据源创建一个新卷
 
 恢复流程通常是：从快照建新 PVC → 修改 Deployment 指向新 PVC → 重启 Pod。这流程要提前演练并写进 SOP，别等真出事时才第一次做。
 
-另外提醒和前面几节一致，快照与源数据在同一套存储上，替代不了异地备份。
+另外，和前面几节一样，快照与源数据在同一套存储上，替代不了异地备份。
 </Callout>
 
 <Callout type="tip" title="CSI 接入的通用排障顺序">
-不管什么驱动，症状对应的排查位置是固定的：
+不管什么驱动，症状对应的排查位置是固定的。
 
 | 症状 | 看哪里 |
 | --- | --- |
@@ -245,12 +245,12 @@ K8s 的 VolumeSnapshot 恢复语义是用快照作为数据源创建一个新卷
   question="Pod 一直卡在 ContainerCreating，PVC 已经是 Bound。该看哪里的日志？"
   options={[
     { text: 'csi-provisioner 的日志', feedback: 'PVC 已 Bound 说明卷创建成功，provisioner 的工作已完成。' },
-    { text: '该 Pod 所在节点上的 CSI node plugin 日志', correct: true },
+    { text: '去该 Pod 所在节点翻 CSI node plugin 的日志', correct: true },
     { text: 'kube-apiserver 日志', feedback: '与挂载无关。' },
     { text: 'snapshot-controller 日志', feedback: '与快照无关。' },
   ]}
   explain={<>
-    记住这条分界线：<strong>创建卷看 controller，挂载卷看 node</strong>。
+    <strong>创建卷看 controller，挂载卷看 node</strong>，这条线分清了就不会查错地方。
     而且要看 Pod 实际调度到的那个节点上的 node plugin，不是随便一个。
   </>}
 />
@@ -267,7 +267,7 @@ K8s 的 VolumeSnapshot 恢复语义是用快照作为数据源创建一个新卷
   explain={<>「恢复出新卷 + 切换工作负载」这个语义如果不提前知道，真出事时会手忙脚乱。演练一次的成本远低于事故时摸索的成本。</>}
 />
 
-## pool 名、GUI 依赖与快照恢复链
+## 最后捋一遍 pool 名、GUI 依赖与快照恢复链
 
 - ceph-csi 那三处 pool 名（建池 / caps / StorageClass）必须完全一致
 - CephFS 的 SC 多一项 `fsName`，RWX 也是靠它

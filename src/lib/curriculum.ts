@@ -106,7 +106,7 @@ export const tracks: Track[] = [
       {
         id: 'protocols',
         title: '存储协议与接入方式',
-        summary: 'iSCSI、NFS、S3、NVMe-oF 各自的开销与坑，接入前先知道。',
+        summary: 'iSCSI、NFS、S3、NVMe-oF 各自的开销与坑，接入前得心里有数。',
         kind: 'concept',
         status: 'ready',
         minutes: 25,
@@ -147,14 +147,14 @@ export const tracks: Track[] = [
       {
         id: 'redundancy',
         title: '副本还是纠删码：冗余机制的取舍',
-        summary: '三副本浪费 67% 空间，EC 省空间但重建时能把集群拖垮。这节课算清这笔账。',
+        summary: '三副本浪费 67% 空间，EC 省空间但重建时能把集群拖垮。这笔账得算清。',
         kind: 'concept',
         status: 'ready',
         minutes: 35,
         objectives: [
           '计算任意副本数 / EC 方案的空间效率与故障容忍度',
           '解释 EC 的读放大、写放大与重建代价',
-          '给出"什么场景用副本、什么场景用 EC"的判断依据',
+          '给出「什么场景用副本、什么场景用 EC」的判断依据',
         ],
         outline: [
           'RAID 回顾：条带、镜像、校验',
@@ -192,12 +192,12 @@ export const tracks: Track[] = [
     level: 'L1',
     title: '系统基础',
     subtitle: 'Linux 性能与观测',
-    goal: '知道存储是什么之后，再学会读懂机器。看得懂 iostat 的每一列，能用 USE 方法在十分钟内把问题定位到磁盘、内存、CPU 还是网络。',
+    goal: '知道存储是什么之后，再学会读懂机器。看得懂 iostat 的每一列。用 USE 方法，十分钟内把问题定位到磁盘、内存、CPU 还是网络。',
     lessons: [
       {
         id: 'use-method',
         title: '性能分析的第一课：USE 方法',
-        summary: '面对"系统慢"这种模糊报障，用一套固定套路把范围收敛到具体资源。',
+        summary: '「系统慢」这种报障太模糊，得靠固定套路把范围收敛到具体资源。',
         kind: 'concept',
         status: 'ready',
         minutes: 25,
@@ -207,7 +207,7 @@ export const tracks: Track[] = [
           '拿到一台陌生机器时，按 60 秒清单跑完一轮体检',
         ],
         outline: [
-          '为什么"平均值"会骗人：延迟分布与长尾',
+          '为什么「平均值」会骗人：延迟分布与长尾',
           'USE 方法：资源清单 × 三个指标',
           '60 秒性能体检清单',
           '把方法套到存储节点上',
@@ -217,7 +217,7 @@ export const tracks: Track[] = [
       {
         id: 'disk-io',
         title: '磁盘 I/O：IOPS、吞吐与延迟的三角关系',
-        summary: '为什么队列深度一加大 IOPS 就上去、延迟也跟着上去？这节课把 iostat 每一列讲透。',
+        summary: '队列深度一加大，IOPS 上去，延迟也跟着上去。iostat 每一列都要读得懂。',
         kind: 'concept',
         status: 'ready',
         minutes: 35,
@@ -259,7 +259,7 @@ export const tracks: Track[] = [
       {
         id: 'cpu-memory',
         title: 'CPU 与内存：存储节点的隐形瓶颈',
-        summary: 'OSD 进程吃满 CPU、NUMA 跨节点访问、page cache 被挤掉，都会表现成"磁盘慢"。',
+        summary: 'OSD 进程吃满 CPU、NUMA 跨节点访问、page cache 被挤掉，都会表现成「磁盘慢」。',
         kind: 'concept',
         status: 'ready',
         minutes: 30,
@@ -300,7 +300,7 @@ export const tracks: Track[] = [
       {
         id: 'toolbox',
         title: '观测与压测工具箱',
-        summary: '把 iostat/vmstat/perf/bpftrace 和 elbencho 串成一套可复用的手法。',
+        summary: '把 iostat/vmstat/perf/bpftrace 和 elbencho 串起来，用成一套顺手的手法。',
         kind: 'lab',
         status: 'ready',
         minutes: 45,
@@ -328,7 +328,7 @@ export const tracks: Track[] = [
     level: 'L2',
     title: 'Ceph 主战场',
     subtitle: '一套集群，三种存储',
-    goal: '分布式存储运维的核心战场。看懂架构之后动手部署，把三种存储跑通，扛住 Day-2 与故障，最后回过头啃 CRUSH 与 PG 的原理。',
+    goal: '分布式存储运维的核心战场。看懂架构之后动手部署，把三种存储跑通，扛住 Day-2 与故障。最后回过头啃 CRUSH 与 PG 的原理。',
     lessons: [
       {
         id: 'architecture',
@@ -423,7 +423,7 @@ export const tracks: Track[] = [
       {
         id: 'cephfs',
         title: 'CephFS 文件存储：MDS 与元数据',
-        summary: '共享文件系统的甜与苦，元数据缓存是它的命门。',
+        summary: '共享文件系统好用，但元数据缓存是它的命门。',
         kind: 'lab',
         status: 'ready',
         minutes: 45,
@@ -445,7 +445,7 @@ export const tracks: Track[] = [
       {
         id: 'rgw',
         title: 'RGW 对象存储：S3 网关',
-        summary: '把 RADOS 包装成 S3，用户、bucket、配额与多站点。',
+        summary: '把 RADOS 包装成 S3，再管用户、bucket、配额与多站点。',
         kind: 'lab',
         status: 'ready',
         minutes: 40,
@@ -495,7 +495,7 @@ export const tracks: Track[] = [
         objectives: [
           '养成从全局往局部收的排查顺序',
           '把 ceph health detail 的告警映射到具体动作',
-          '独立完成一次从告警到根因的闭环',
+          '独立走完一次从告警到根因的排查',
         ],
         outline: [
           '第一关：集群健康度总览',
@@ -507,7 +507,7 @@ export const tracks: Track[] = [
       {
         id: 'quest-mon',
         title: '闯关：集群完全不可用，MON 出了什么事',
-        summary: 'ceph 命令直接卡住不返回。这一关练的是「管理面挂了怎么办」。',
+        summary: 'ceph 命令直接卡住不返回。管理面挂了怎么救，这一关就是练这个。',
         kind: 'quest',
         status: 'ready',
         minutes: 40,
@@ -617,7 +617,7 @@ export const tracks: Track[] = [
       {
         id: 'requirements',
         title: '需求拆解：容量、带宽、IOPS 三条线',
-        summary: '客户说"要 1PB 高性能存储"，这句话里缺了至少五个关键参数。',
+        summary: '客户说「要 1PB 高性能存储」，这句话里缺了至少五个关键参数。',
         kind: 'concept',
         status: 'ready',
         minutes: 30,
@@ -659,7 +659,7 @@ export const tracks: Track[] = [
       {
         id: 'perf-estimate',
         title: '性能估算与瓶颈定位',
-        summary: '在采购之前就算出这套配置能跑多快，以及第一个瓶颈会出现在哪。',
+        summary: '采购之前就能算出这套配置跑多快，第一个瓶颈会出现在哪。',
         kind: 'planner',
         status: 'ready',
         minutes: 35,
@@ -679,7 +679,7 @@ export const tracks: Track[] = [
       {
         id: 'solution-compare',
         title: '方案对比：什么时候不该用 Ceph',
-        summary: '开源不等于便宜。把授权费、运维成本、技术支持一起算进去。',
+        summary: '开源不等于便宜，授权费、运维成本、技术支持都要算进去。',
         kind: 'concept',
         status: 'ready',
         minutes: 30,
@@ -805,7 +805,7 @@ export const tracks: Track[] = [
       {
         id: 'rdma-storage',
         title: '实验：把 RDMA 接到存储上',
-        summary: 'GPFS verbsRdma、NVMe-oF over RDMA、GPUDirect Storage，三条落地路径与各自的验收方法。',
+        summary: 'GPFS verbsRdma、NVMe-oF over RDMA、GPUDirect Storage，三条路径怎么落地、各自怎么验收。',
         kind: 'lab',
         status: 'ready',
         minutes: 45,
@@ -879,7 +879,7 @@ export const tracks: Track[] = [
       {
         id: 'commercial',
         title: '商业方案巡礼：Weka / VastData / XSKY',
-        summary: '知道市面上有什么、各自强在哪，选型时才不会只会推 Ceph。',
+        summary: '市面上有什么、各自强在哪，选型时才不至于只会推 Ceph。',
         kind: 'concept',
         status: 'ready',
         minutes: 35,
@@ -912,7 +912,7 @@ export const tracks: Track[] = [
         objectives: [
           '搭起存储集群的指标采集与看板',
           '设计不误报也不漏报的告警规则',
-          '做容量趋势预测',
+          '预测容量趋势',
         ],
         outline: [
           '指标来源：Ceph exporter、GPFS、节点侧',
@@ -926,7 +926,7 @@ export const tracks: Track[] = [
       {
         id: 'oncall',
         title: '值班手册：SOP 与故障复盘',
-        summary: '把前面所有知识固化成可交接的流程，这才是工程师的产出物。',
+        summary: '把前面学的都写成可交接的流程，这才是工程师的产出。',
         kind: 'concept',
         status: 'ready',
         minutes: 30,
@@ -969,7 +969,7 @@ export function getLesson(trackId: string, lessonId: string) {
   }
 }
 
-/** 全局线性顺序，用于"上一课 / 下一课"跨阶段跳转 */
+/** 全局线性顺序，用于「上一课 / 下一课」跨阶段跳转 */
 export function getFlatNeighbors(trackId: string, lessonId: string) {
   const index = allLessons.findIndex(
     (item) => item.track.id === trackId && item.lesson.id === lessonId,

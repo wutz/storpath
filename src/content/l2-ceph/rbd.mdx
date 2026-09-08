@@ -1,6 +1,6 @@
-## 从池到设备，一条完整链路
+## 一个块设备是怎么拼出来的
 
-RBD（RADOS Block Device）把一个"块设备"拆成很多个固定大小的 RADOS 对象（默认 4MB），条带化分布到整个集群。
+RBD（RADOS Block Device）把一个「块设备」拆成很多个固定大小的 RADOS 对象（默认 4MB），条带化分布到整个集群。
 
 ```
 一个 100GB 的 RBD image
@@ -11,7 +11,7 @@ RBD（RADOS Block Device）把一个"块设备"拆成很多个固定大小的 RA
          └─ 每个对象按 CRUSH 分布到不同 OSD
 ```
 
-好处很直接，**一个 image 的 I/O 天然分散到整个集群的所有盘上**，不会全压在几块盘上。
+拆完以后，一个 image 的 I/O 就分散到整个集群的所有盘上，不会全压在几块盘上。
 
 ## 第 1 步：创建池
 
@@ -74,7 +74,7 @@ rbd unmap /dev/rbd0
 rbd: image disk01: image uses unsupported features: 0x38
 ```
 
-处理方式是创建时只开内核支持的特性：
+创建时只开内核支持的特性就行：
 
 ```bash
 rbd create rbd/disk01 --size 100G --image-feature layering
@@ -85,7 +85,7 @@ rbd feature disable rbd/disk01 object-map fast-diff deep-flatten
 用户态客户端（librbd，QEMU/KVM 和 CSI 走的路径）支持全部特性，没有这个限制。
 </Callout>
 
-## 第 3 步：快照与克隆
+## 第 3 步：打快照，克隆新盘
 
 ```bash
 # 创建快照（瞬时完成，写时复制）
@@ -109,7 +109,7 @@ rbd flatten rbd/disk02
 <Callout type="warn" title="快照不是备份">
 快照和原始数据在同一个集群、同一批盘上。集群级故障、误删池、机房事故会让快照和数据一起消失。
 
-快照能解决的是"误删文件"和"回滚到某个时间点"，解决不了"存储集群没了"。真正的备份得放在另一套系统里（`rbd export` 到对象存储、或用备份软件）。
+快照能解决的是「误删文件」和「回滚到某个时间点」，解决不了「存储集群没了」。真正的备份得放在另一套系统里（`rbd export` 到对象存储、或用备份软件）。
 </Callout>
 
 ## 第 4 步：接到 K8s（ceph-csi-rbd）
@@ -167,7 +167,7 @@ spec:
 需要多 Pod 共享读写就得用 CephFS（`ReadWriteMany`）。这个约束是块存储语义本身决定的，K8s 改不了。
 </Callout>
 
-## 扩容
+## 扩容时别忘了文件系统
 
 ```bash
 # Ceph 侧扩容 image
@@ -182,16 +182,16 @@ K8s 环境下，只要 StorageClass 开了 `allowVolumeExpansion: true`，改 PV
 
 <Quiz
   id="rbd-1"
-  question="rbd map 报错 image uses unsupported features。原因是什么？"
+  question="rbd map 报 image uses unsupported features，问题出在哪？"
   options={[
-    { text: 'image 损坏了', feedback: '这是特性兼容问题，image 本身是好的。' },
+    { text: '大概是 image 坏了', feedback: '特性兼容问题，image 本身没坏。' },
     { text: '内核态客户端不支持该 image 开启的某些特性', correct: true },
-    { text: '集群健康状态异常', feedback: '与集群健康无关。' },
-    { text: '权限不足', feedback: '权限问题会报 auth 相关错误。' },
+    { text: '集群健康出了问题', feedback: '和集群健康无关。' },
+    { text: '当前用户没权限', feedback: '权限不够会报 auth 相关的错。' },
   ]}
   explain={<>
-    用 <code>rbd feature disable</code> 关掉内核不支持的特性，或创建时用 <code>--image-feature layering</code> 只开基础特性。
-    走 librbd 的场景（QEMU、CSI）不受这个限制。
+    用 <code>rbd feature disable</code> 关掉内核不认识的那几个特性，或者创建时用 <code>--image-feature layering</code> 只开基础特性。
+    走 librbd 的场景（QEMU、CSI）没有这个限制。
   </>}
 />
 
@@ -199,24 +199,24 @@ K8s 环境下，只要 StorageClass 开了 `allowVolumeExpansion: true`，改 PV
   id="rbd-2"
   question="团队想让 3 个 Pod 同时读写同一份数据，有人建议用 RBD 配 ReadWriteMany。该怎么回应？"
   options={[
-    { text: '可以，把 accessMode 改成 RWX 就行', feedback: '即使 K8s 允许你写，文件系统也会被写坏。' },
+    { text: '可以，把 accessMode 改成 RWX 就行', feedback: '就算 K8s 让你这么写，文件系统照样会被写坏。' },
     { text: '不行，块存储是单挂载语义，多节点同时挂载会损坏文件系统，应该用 CephFS', correct: true },
-    { text: '可以，但要把副本数改成 3', feedback: '副本数与挂载语义无关。' },
-    { text: '可以，只要三个 Pod 都是只读', feedback: '题目明确要求读写。多个只读挂载在特定条件下可行，但不满足需求。' },
+    { text: '把副本数调成 3 就没问题了', feedback: '副本数和挂载语义没关系。' },
+    { text: '三个 Pod 都只读就没问题', feedback: '需求就是读写。多个只读挂载在特定条件下可行，但这里用不上。' },
   ]}
-  explain={<>块和文件的语义差别就体现在这里。需要共享读写就用 CephFS 的 RWX，所以一套集群通常两种都会部署。</>}
+  explain={<>块存储天生只能单挂载，要共享读写就得换 CephFS 的 RWX，所以一套集群通常两种都会部署。</>}
 />
 
 <Quiz
   id="rbd-3"
-  question="关于 RBD 快照，下面哪些说法正确？（多选）"
+  question="关于 RBD 快照，哪些说法对？（多选）"
   options={[
     { text: '快照是写时复制的，创建瞬间完成且几乎不占空间', correct: true },
     { text: '克隆前需要先 protect 快照', correct: true },
-    { text: '快照不能替代异地备份', correct: true },
+    { text: '别拿快照当异地备份', correct: true },
     { text: '快照会自动复制到另一个集群', feedback: '跨集群复制需要单独配置 rbd-mirror。' },
   ]}
-  explain={<>快照与源数据同生共死，它防的是误操作，不防集群级灾难。要跨集群保护得用 rbd-mirror 或定期 rbd export。</>}
+  explain={<>快照和源数据同生共死，它防的是误操作，不防集群级灾难。要跨集群保护得用 rbd-mirror 或定期 rbd export。</>}
 />
 
 ## RBD 的边界和取舍
@@ -224,6 +224,6 @@ K8s 环境下，只要 StorageClass 开了 `allowVolumeExpansion: true`，改 PV
 - image 被切成 4MB 对象条带化铺开，天然用上全集群的盘
 - 块存储池用副本，别用 EC
 - 内核客户端不认识的特性，创建时用 `--image-feature layering` 避开
-- 快照写时复制、瞬时完成，但**不是备份**
-- 只能 ReadWriteOnce，语义决定的，不是配置限制
-- 扩容分 Ceph 侧和文件系统侧两步，CSI 会替你走完
+- 快照写时复制、瞬时完成，但它不是备份
+- 只能 ReadWriteOnce，这是语义决定的，不是配置限制
+- 扩容要动两边：Ceph 侧扩 image，客户端扩文件系统，CSI 会替你走完

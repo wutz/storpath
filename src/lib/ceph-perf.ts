@@ -1,5 +1,5 @@
 /**
- * Ceph 集群性能估算（教学口径）。
+ * Ceph 集群性能估算（量级口径）。
  *
  * 盘、cluster 网、public 网三条线各算一个上限，最小的那条再打个经验折扣。
  * 只回答「瓶颈在哪」，不当精确值用。
@@ -116,9 +116,9 @@ export function estimateCephPerf(input: PerfInput): PerfResult {
     notes.push('EC 的估算只对大块顺序 I/O 成立，4K 随机小写会被分片放大拖到远低于这个值。')
   }
   if (input.disksPerNode * input.diskWriteMBps > gbpsToMBps(Math.max(input.publicGbps, input.clusterGbps)) * 3) {
-    notes.push('单节点盘的聚合带宽远超网卡能力，加盘也提不上去，先把网络升了。')
+    notes.push('单节点盘的聚合带宽远超网卡能力，加盘也提不上去，先升级网络。')
   }
-  notes.push('以上都是顺序大块带宽估算，随机小 I/O 的上限看 IOPS 和延迟，得单独测。')
+  notes.push('这些数字都按顺序大块带宽算，随机小 I/O 的上限看 IOPS 和延迟，得单独测。')
 
   return {
     profile,

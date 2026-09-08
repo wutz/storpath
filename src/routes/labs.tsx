@@ -11,19 +11,19 @@ const SECTIONS: { kind: LessonKind; title: string; eyebrow: string; desc: string
     kind: 'quest',
     title: '命令行闯关',
     eyebrow: 'Quest',
-    desc: '在模拟终端里接手一套出问题的集群，照着目标一步步找出根因。',
+    desc: '在模拟终端里接手一套出问题的集群，按目标一步步定位根因。',
   },
   {
     kind: 'lab',
     title: '动手实验',
     eyebrow: 'Lab',
-    desc: '需要真实环境（虚拟机或测试集群），跟着步骤把服务跑起来。',
+    desc: '需要真实环境（虚拟机或测试集群），按步骤把服务跑起来。',
   },
   {
     kind: 'planner',
     title: '规划计算器',
     eyebrow: 'Planner',
-    desc: '改参数看结果，把容量和性能的账算明白。',
+    desc: '改参数看结果，把容量和性能算清楚。',
   },
 ]
 
@@ -37,8 +37,8 @@ function LabsPage() {
         <div className="eyebrow">Hands-on</div>
         <h1 className="display-2xl mt-3">动手的部分。</h1>
         <p className="mt-4 max-w-2xl text-[17px] leading-relaxed text-body">
-          知识点看过就忘，动手做过才记得住。这里把全部动手环节汇总在一起，
-          你可以跳过课程顺序直接来练。
+          只看不做，知识点很容易忘。这里汇总了全部动手环节，
+          可以跳过课程顺序直接开练。
         </p>
       </header>
 

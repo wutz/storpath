@@ -2,7 +2,7 @@
 
 即使你运维的是 Ceph 或 GPFS，节点上照样有本地文件系统在干活：MON 的 RocksDB 放在本地盘的 XFS 上，容器镜像、日志也都落在本地盘。理解本地文件系统的机制，是理解分布式文件系统的前提。CephFS 的 MDS 解决的问题，和 XFS 的 inode 解决的是同一类问题，只是尺度不同。
 
-## VFS：一层让一切都像文件的抽象
+## VFS 让一切都像文件
 
 ```
 应用: open("/mnt/data/a.txt")
@@ -22,7 +22,7 @@ VFS 定义了三个核心对象，元数据开销的来源就在这三样上。
 | **dentry** | 目录项：把文件名映射到 inode | dentry cache |
 | **file** | 一个打开的文件句柄，含当前偏移 | 进程的 fd 表 |
 
-打开 `/mnt/data/a.txt` 要逐级解析：查 `/` 的 dentry → 查 `mnt` → 查 `data` → 查 `a.txt`。路径每深一层就多一次查找，深目录结构在网络文件系统上明显更慢。每一级都可能是一次网络往返。
+打开 `/mnt/data/a.txt` 要逐级解析：查 `/` 的 dentry → 查 `mnt` → 查 `data` → 查 `a.txt`。路径每深一层就多一次查找，深目录结构在网络文件系统上明显更慢，每一级都可能是一次网络往返。
 
 ```bash
 # 查看 inode 和 dentry 缓存占用
@@ -33,12 +33,12 @@ slabtop -o | head -10
 ```
 
 <Callout type="note" title="元数据缓存也吃内存">
-一台缓存了几千万个 dentry 的机器，光 dentry cache 就能占掉几十 GB。这部分内存算在 `buff/cache` 里，可回收，但回收之后下一次 `ls` 就要重新去盘上读。这正是 CephFS MDS 缓存不足时性能锐减的同一个道理，只是发生在服务端而已。
+一台缓存了几千万个 dentry 的机器，光 dentry cache 就能占掉几十 GB。这部分内存算在 `buff/cache` 里，可回收，但回收之后下一次 `ls` 就要重新去盘上读。CephFS 的 MDS 缓存不够时性能锐减，也是同一个道理，只是发生在服务端。
 </Callout>
 
 ## 日志（journal）与写放大
 
-XFS 和 ext4 的承诺是**元数据操作要么完整生效，要么完全没发生**，掉电不会留下损坏的目录结构。
+XFS 和 ext4 的承诺是元数据操作要么完整生效，要么完全没发生，掉电不会留下损坏的目录结构。
 
 代价是同一份元数据要写两次，先写日志，再写正式位置。
 
@@ -49,7 +49,7 @@ XFS 和 ext4 的承诺是**元数据操作要么完整生效，要么完全没�
   3. 写实际的 inode 和目录块
 ```
 
-`ext4` 提供三种日志模式，理解它们的差别就理解了写放大：
+`ext4` 有三种日志模式，差别全落在写放大上：
 
 | 模式 | 日志内容 | 安全性 | 性能 |
 | --- | --- | --- | --- |
@@ -57,9 +57,9 @@ XFS 和 ext4 的承诺是**元数据操作要么完整生效，要么完全没�
 | `ordered`（默认） | 只记元数据，但保证数据先于元数据落盘 | 高 | 中 |
 | `writeback` | 只记元数据，不保证顺序 | 掉电可能读到旧数据 | 最快 |
 
-XFS 只有类似 `ordered` 的模式，且日志实现更高效，这是它在大容量、高并发场景更受青睐的原因之一。
+XFS 只有类似 `ordered` 的模式，日志实现也更高效，所以在大容量、高并发场景更受青睐。
 
-## 挂载参数：存储节点上真正该调的几个
+## 存储节点上真正该调的挂载参数
 
 ```bash
 # 格式化：XFS 通常直接用默认值即可，块大小 4K 适配绝大多数场景
@@ -84,9 +84,9 @@ systemctl enable fstrim.timer --now
 ```
 </Callout>
 
-## 小文件问题：为什么元数据比数据更难扛
+## 小文件为什么比大文件难扛
 
-存 100 万个 4KB 文件（共 4GB）和存 1 个 4GB 文件，数据量相同，代价差得远：
+存 100 万个 4KB 文件（共 4GB）和存 1 个 4GB 文件，数据量相同，代价差得远。
 
 | | 100 万小文件 | 1 个大文件 |
 | --- | --- | --- |
@@ -115,21 +115,21 @@ Filesystem        Inodes   IUsed     IFree IUse% Mounted on
   question="一台机器 df -h 显示 /data 还有 3TB 可用，但应用写文件报 No space left on device。最该先查什么？"
   options={[
     { text: 'df -i 看 inode 是否耗尽', correct: true },
-    { text: '重启文件系统服务', feedback: '文件系统没有"服务"可重启，且这是在掩盖问题。' },
-    { text: '检查磁盘是否损坏', feedback: '硬件故障通常报 I/O error，不是 No space。' },
-    { text: '扩容磁盘', feedback: '空间还剩 3TB，扩容不解决问题。' },
+    { text: '文件系统服务挂了，重启一下', feedback: '文件系统没有「服务」可重启，重启也只是把问题盖住。' },
+    { text: '磁盘坏了，先查硬件', feedback: '硬件故障通常报 I/O error，不是 No space。' },
+    { text: '空间不够，加块盘', feedback: '空间还剩 3TB，扩容不解决问题。' },
   ]}
-  explain={<>空间和 inode 是两套独立的配额。海量小文件场景下 inode 先于空间耗尽很常见。ext4 的 inode 数在格式化时固定，XFS 则是动态分配。</>}
+  explain={<>空间和 inode 是两套独立的配额，海量小文件场景下 inode 先于空间耗尽很常见。ext4 的 inode 数格式化时就固定了，XFS 是动态分配。</>}
 />
 
 <Quiz
   id="fs-2"
-  question="关于挂载参数，下面哪些做法适合存储节点？（多选）"
+  question="存储节点上，哪些挂载参数的做法是对的？（多选）"
   options={[
-    { text: '开启 noatime 避免每次读都触发元数据写', correct: true },
-    { text: '不加 discard，改用 fstrim.timer 定期批量 TRIM', correct: true },
+    { text: 'noatime 必开，不然每次读都要写一次元数据', correct: true },
+    { text: '别加 discard，改用 fstrim.timer 定期批量 TRIM', correct: true },
     { text: '大容量、元数据密集场景优先选 XFS', correct: true },
-    { text: '用 ext4 的 writeback 模式追求最高性能', feedback: 'writeback 在掉电后可能读到旧数据甚至垃圾数据，存储节点不能接受这种风险。' },
+    { text: 'ext4 的 writeback 模式性能最高，直接用它', feedback: 'writeback 在掉电后可能读到旧数据甚至垃圾数据，存储节点不能接受这种风险。' },
   ]}
   explain={<>存储节点调挂载参数，能省掉的写就省掉（noatime），能批量做的别同步做（fstrim）。但别拿一致性换性能。</>}
 />
@@ -139,5 +139,5 @@ Filesystem        Inodes   IUsed     IFree IUse% Mounted on
 - 元数据开销来自 VFS 的 inode / dentry / file 三件套
 - 路径每深一层多一次查找，在网络文件系统上尤其贵
 - 日志换来元数据一致性，代价是写放大；别拿 writeback 换性能
-- `noatime` 必开，`discard` 不开改用 `fstrim.timer`
+- 挂载时 `noatime` 必开，`discard` 不要开，改用 `fstrim.timer`
 - 小文件的代价在元数据和 inode，不在容量；XFS 的 inode 动态分配是实际优势

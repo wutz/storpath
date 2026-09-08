@@ -7,17 +7,17 @@ export const Route = createRootRoute({
     meta: [
       { charSet: 'utf-8' },
       { name: 'viewport', content: 'width=device-width, initial-scale=1, viewport-fit=cover' },
-      { title: 'Storpath — 存储成长路径' },
+      { title: 'Storpath · 存储成长路径' },
       {
         name: 'description',
         content:
-          '存储运维工程师的成长路线：每一步都接着上一步，从存储原理与 Linux 系统基础起步，走过 Ceph 三种存储、容量与性能规划，直到 RDMA 网络、GPFS ECE、K8s CSI 与商业存储。',
+          '存储运维工程师的成长路线：从存储原理和 Linux 系统基础起步，学完 Ceph 的三种存储、容量与性能规划，再进入 RDMA 网络、GPFS ECE、K8s CSI 与商业存储。',
       },
     ],
     links: [
       { rel: 'stylesheet', href: appCss },
       { rel: 'icon', href: '/logo.svg', type: 'image/svg+xml' },
-      /* 正文和代码用两套字体，Geist 走叙述，Geist Mono 走技术标签。中文回落到系统字体 */
+      /* 正文用 Geist，技术标签用 Geist Mono，中文回落到系统字体 */
       { rel: 'preconnect', href: 'https://fonts.googleapis.com' },
       { rel: 'preconnect', href: 'https://fonts.gstatic.com', crossOrigin: 'anonymous' },
       {
@@ -83,9 +83,9 @@ function RootLayout() {
           <div className="mx-auto max-w-6xl px-4 py-10 sm:px-6">
             <div className="eyebrow">Storpath</div>
             <p className="mt-3 max-w-3xl text-sm leading-relaxed text-body">
-              存储运维工程师的成长路线，从看懂一块盘到扛住一套集群。
+              存储运维工程师的成长路线：先看懂一块盘，再独立维护一套集群。
             </p>
-            <p className="mt-2 text-xs text-mute">学习进度保存在本地浏览器，换设备不同步。</p>
+            <p className="mt-2 text-xs text-mute">学习进度保存在本地浏览器，换设备不会同步。</p>
           </div>
         </footer>
 

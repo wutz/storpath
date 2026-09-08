@@ -1,13 +1,13 @@
 /**
  * Ceph 集群容量推算。
  *
- * 教学口径，公式故意写成能手算的：
+ * 教学口径，公式刻意保持可手算：
  *   裸容量(TiB) = 节点数 × 每节点盘数 × 单盘 TB × 0.909
  *   冗余后      = 裸容量 × 冗余效率
  *   可写容量    = 冗余后 × 满水位 × (1 - 节点级重建预留)
  *
  * 真实项目还得算上 BlueStore 元数据、PG 分布不均带来的木桶效应，
- * 这两块在 planning/perf-estimate 一课里单独讲。
+ * 这两块在 planning/perf-estimate 里单独说明。
  */
 import { tbToTib } from './units'
 
@@ -46,7 +46,7 @@ export const REDUNDANCY_OPTIONS: RedundancyOption[] = [
     efficiency: 4 / 6,
     minNodes: 7,
     tolerance: 2,
-    note: '对象/归档常用，节点数少时优先',
+    note: '对象和归档常用，节点少时优先选它',
   },
   {
     id: 'ec-8-3',
@@ -54,7 +54,7 @@ export const REDUNDANCY_OPTIONS: RedundancyOption[] = [
     efficiency: 8 / 11,
     minNodes: 12,
     tolerance: 3,
-    note: '大集群用，空间效率和容错兼顾',
+    note: '大集群用，空间效率和容错都够用',
   },
   {
     id: 'ec-8-2',
@@ -62,7 +62,7 @@ export const REDUNDANCY_OPTIONS: RedundancyOption[] = [
     efficiency: 8 / 10,
     minNodes: 11,
     tolerance: 2,
-    note: '空间效率最高，容错最紧',
+    note: '空间效率最高，容错余量最小',
   },
 ]
 
@@ -106,17 +106,17 @@ export function planCephCapacity(input: CapacityInput): CapacityResult {
   const warnings: string[] = []
   if (input.nodes < option.minNodes) {
     warnings.push(
-      `${option.label} 建议至少 ${option.minNodes} 个节点（当前 ${input.nodes} 个），否则没法按主机划分故障域，坏一台就可能不可用。`,
+      `${option.label} 建议至少 ${option.minNodes} 个节点（当前 ${input.nodes} 个），否则主机级故障域凑不齐，坏一台就可能不可用。`,
     )
   }
   if (input.nodes < 3) {
     warnings.push('节点数少于 3，MON 组不成 quorum，生产上不能这么用。')
   }
   if (input.fullRatio > 0.9) {
-    warnings.push('满水位超过 90%，触发 full_ratio 后集群会拒绝写入，再平衡也没有腾挪空间。')
+    warnings.push('满水位超过 90%，触发 full_ratio 后集群会拒绝写入，再平衡也没地方腾挪。')
   }
   if (option.id.startsWith('ec-') && input.disksPerNode * input.nodes < 20) {
-    warnings.push('OSD 总数偏少时用 EC，重建流量集中，恢复期间性能掉得会很厉害。')
+    warnings.push('OSD 总数偏少还用 EC，重建流量集中，恢复期间性能掉得厉害。')
   }
   if (input.diskSizeTB >= 16) {
     warnings.push('单盘容量偏大，坏盘后要重建的数据多、窗口也长，重建期间再坏一块就悬了。')

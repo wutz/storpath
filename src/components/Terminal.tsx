@@ -3,7 +3,7 @@ import { useLessonKey } from './lesson-context'
 import { setQuizPassed } from '#/lib/progress'
 
 export interface TerminalCommand {
-  /** 标准写法，hint 里显示的也是这个 */
+  /** 标准写法，hint 里给的也是它 */
   cmd: string
   /** 等价写法 */
   aliases?: string[]
@@ -23,7 +23,7 @@ const normalize = (s: string) => s.trim().replace(/\s+/g, ' ')
 
 /**
  * 命令行演练器。
- * 这里不是真终端，所有输出都是预置的固定文本，练的是"看到什么该想什么"。
+ * 这里不是真终端，输出都是预置文本，练的是「看到什么该想什么」。
  * 打字不用在这儿练，真机操作去 lab 类课程。
  */
 export function Terminal({
@@ -85,8 +85,8 @@ export function Terminal({
         text: [
           '演练内置命令：',
           '  help   看这段说明',
-          '  goals  看这次演练的目标',
-          '  hint   给当前目标的提示',
+          '  goals  看本次演练目标',
+          '  hint   给当前目标提示',
           '  clear  清屏',
           '其余命令按真实排查思路自己敲。',
         ].join('\n'),
@@ -195,7 +195,7 @@ export function Terminal({
             value={value}
             spellCheck={false}
             autoComplete="off"
-            // 手机输入法默认会首字母大写、自动纠错，敲出来的命令一律匹配不上
+            // 手机输入法默认首字母大写、自动纠错，敲出来的命令匹配不上
             autoCapitalize="none"
             autoCorrect="off"
             enterKeyHint="go"

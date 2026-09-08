@@ -74,7 +74,7 @@ export function CephCapacityPlanner() {
             >
               {REDUNDANCY_OPTIONS.map((option) => (
                 <option key={option.id} value={option.id}>
-                  {option.label}（效率 {formatPercent(option.efficiency, 0)}，容忍 {option.tolerance} 台）
+                  {option.label}（效率 {formatPercent(option.efficiency, 0)}，可坏 {option.tolerance} 台）
                 </option>
               ))}
             </select>
@@ -82,7 +82,7 @@ export function CephCapacityPlanner() {
 
           <Field
             label={`满水位 ${formatPercent(input.fullRatio, 0)}`}
-            hint="Ceph 默认 nearfull 0.85 / full 0.95，规划按 0.85 更稳"
+            hint="Ceph 默认 nearfull 0.85 / full 0.95，规划按 0.85 算更稳"
           >
             <input
               type="range"
@@ -124,7 +124,7 @@ export function CephCapacityPlanner() {
               ['裸容量（厂商口径）', formatTB(result.rawTB)],
               ['裸容量（系统口径）', formatTiB(result.rawTiB)],
               [`冗余后（${result.option.label}）`, formatTiB(result.afterRedundancyTiB)],
-              ['可容忍主机故障', `${result.option.tolerance} 台`],
+              ['最多可坏主机', `${result.option.tolerance} 台`],
             ].map(([label, value]) => (
               <div key={label} className="flex items-center justify-between gap-3 px-3.5 py-2">
                 <dt className="text-body">{label}</dt>

@@ -6,7 +6,7 @@ import { setQuizPassed } from '#/lib/progress'
 export interface QuizOption {
   text: string
   correct?: boolean
-  /** 选错时的针对性解释，比一句标准答案管用 */
+  /** 选错时给出的针对性解释 */
   feedback?: string
 }
 

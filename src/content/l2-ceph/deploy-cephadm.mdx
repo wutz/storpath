@@ -2,17 +2,17 @@
 
 用 cephadm 从零拉起一套三节点 Ceph 集群。它用容器跑所有守护进程，靠 SSH 管理各节点，也是目前官方推荐的部署方式。
 
-**适用场景**：一套独立的存储集群，给多个计算集群用。存储和计算塞进同一个集群的玩法，看下一节的 Rook。
+什么时候该用 cephadm？一套独立的存储集群，给多个计算集群用。存储和计算塞进同一个集群的玩法，看下一节的 Rook。
 
 **实验环境要求**：3 台机器（虚拟机即可），每台至少 1 块空闲数据盘，能互相 SSH。
 
 <Callout type="warn" title="动手前的三条纪律">
 1. 数据盘必须是空盘，cephadm 会直接擦除它
 2. 不要提前创建名为 `ceph` 的系统用户，否则安装包的 post-install 脚本会执行失败
-3. 系统盘必须是 SSD，机械盘不行：MON 的 RocksDB 在上面，机械盘会拖垮整个管理面
+3. 系统盘必须是 SSD，机械盘不行，因为 MON 的 RocksDB 在上面，机械盘会拖垮整个管理面
 </Callout>
 
-## 第 0 步：环境准备
+## 第 0 步：把环境准备齐
 
 三件事，缺一不可。
 
@@ -67,7 +67,7 @@ cephadm --image quay.io/ceph/ceph:v20.2.1 bootstrap \
   --cluster-network 10.1.20.0/24
 ```
 
-这一条命令做了六件事，记住它们，排障时用得上：
+这一条命令顺手做了六件事，排障时都用得上：
 
 1. 在本机创建第一个 MON 和 MGR
 2. 生成一对 SSH 密钥，把公钥加进本机 `authorized_keys`
@@ -152,7 +152,7 @@ ceph orch daemon add osd ceph-node1:/dev/nvme1n1
 ceph orch device zap ceph-node1 /dev/nvme1n1 --force
 ```
 
-## 第 5 步：验证
+## 第 5 步：怎么确认集群起来了
 
 ```bash
 ceph -s
@@ -174,7 +174,7 @@ ceph orch ps           # 看所有守护进程的部署状态
 | 监控组件拉不起来 | 镜像拉取失败 | 配置内网镜像地址 |
 </Callout>
 
-## 第 6 步：内存参数（生产必做）
+## 第 6 步：调内存参数，生产必做
 
 默认 `osd_memory_target` 是 4GB，大节点上要按实际情况调：
 
@@ -194,37 +194,37 @@ ceph config get osd osd_memory_target
   options={[
     { text: '把 /etc/ceph/ceph.pub 分发到目标节点的 authorized_keys 了吗', correct: true },
     { text: '目标节点的磁盘容量够不够', feedback: '加节点这一步还不涉及 OSD 和容量。' },
-    { text: '重新 bootstrap 一次', feedback: '这会毁掉已有集群，且没有针对问题。' },
-    { text: '把 MON 数量改成 1', feedback: '与 SSH 连通性无关。' },
+    { text: '重新 bootstrap 一次', feedback: '这会毁掉已有集群，而且压根没对上问题。' },
+    { text: '把 MON 数量改成 1', feedback: '和 SSH 连通性没关系。' },
   ]}
-  explain={<>cephadm 通过 SSH 管理所有节点。bootstrap 生成的公钥在 /etc/ceph/ceph.pub，必须先分发出去。手工 <code>ssh root@ceph-node2</code> 验证一下最快。</>}
+  explain={<>cephadm 全靠 SSH 管节点，bootstrap 生成的公钥就放在 /etc/ceph/ceph.pub，没分发过去节点就一直卡着。手工 <code>ssh root@ceph-node2</code> 试一下最快。</>}
 />
 
 <Quiz
   id="cephadm-2"
   question="ceph orch device ls 显示某块盘 AVAILABLE 为 No，REJECT REASONS 是 LVM detected。怎么处理？"
   options={[
-    { text: '换一块新盘', feedback: '成本太高，盘本身没问题。' },
+    { text: '干脆换一块新盘', feedback: '成本太高，盘本身没问题。' },
     { text: '用 ceph orch device zap 清除盘上的残留元数据', correct: true },
-    { text: '忽略它，Ceph 会自动处理', feedback: 'Ceph 出于安全考虑绝不会自动擦除有数据痕迹的盘。' },
-    { text: '修改 crush rule', feedback: '与设备可用性无关。' },
+    { text: '放着不管，Ceph 自己会处理吗', feedback: 'Ceph 出于安全考虑绝不会自动擦除有数据痕迹的盘。' },
+    { text: '调一下 crush rule', feedback: '和设备可用性没关系。' },
   ]}
   explain={<>
-    Ceph 拒绝使用带有残留分区、LVM 或文件系统签名的盘，这是防止误擦数据的保护机制。
-    确认盘上确实没有需要的数据后，用 zap 清理。<strong>执行前务必确认盘号</strong>，zap 是不可逆的。
+    Ceph 不肯碰带残留分区、LVM 或文件系统签名的盘，为的就是防你误擦数据。
+    确认盘上确实没有需要的数据，再用 zap 清。<strong>执行前务必确认盘号</strong>，zap 不可逆。
   </>}
 />
 
 <Quiz
   id="cephadm-3"
-  question="关于 bootstrap 做的事情，下面哪些是对的？（多选）"
+  question="bootstrap 到底做了哪些事？（多选）"
   options={[
     { text: '创建第一个 MON 和 MGR', correct: true },
     { text: '把公钥写到 /etc/ceph/ceph.pub 供后续加节点使用', correct: true },
     { text: '给引导节点打上 _admin 标签', correct: true },
     { text: '自动把集群里所有磁盘做成 OSD', feedback: 'bootstrap 不碰任何数据盘，OSD 要单独添加。' },
   ]}
-  explain={<>记住 bootstrap 的六件事，能解释后面绝大多数"为什么这个文件在这里"的疑问。</>}
+  explain={<>bootstrap 那六件事都清楚之后，后面绝大多数「为什么这个文件在这里」的疑问你自己就能解释。</>}
 />
 
 ## 照这套顺序把 cephadm 集群拉起来

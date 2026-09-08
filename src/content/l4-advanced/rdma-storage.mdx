@@ -1,8 +1,8 @@
 ## 三条落地路径
 
-上一节讲了 RDMA 凭什么快。这一节讲怎么把它真正接到存储上，还有一件更要紧的事：证明它确实生效了。
+上一节讲了 RDMA 凭什么快，这一节讲怎么把它真正接到存储上。还有一件更要紧的事，就是证明它确实生效了。
 
-存储侧用得上 RDMA 的地方主要是三处：
+存储侧用得上 RDMA 的地方主要就三个。
 
 ```
 GPFS verbsRdma         文件系统的客户端 ↔ 服务端流量走 RDMA
@@ -10,9 +10,9 @@ NVMe-oF over RDMA      把远端 NVMe 盘映射成本地块设备
 GPUDirect Storage      让 GPU 绕过主机内存，直接从存储读进显存
 ```
 
-三条路径互相独立，可以只上其中一条。下面挨个走一遍。
+三条路径互相独立，可以只上其中一条。
 
-## GPFS：打开 verbsRdma
+## 在 GPFS 上打开 verbsRdma
 
 GPFS 的 RDMA 支持很成熟，是 ECE 部署里的标配。前置条件是装好 Mellanox OFED（[部署那一节](/learn/l4-advanced/gpfs-deploy)第 6 步）。
 
@@ -33,7 +33,7 @@ mmshutdown -a && mmstartup -a
 mmdiag --config | grep -i verbs
 ```
 
-关键一步是确认它真的连上了：
+改完必须确认它真的连上了：
 
 ```bash
 # RDMA 总开关状态
@@ -72,7 +72,7 @@ GPFS 在 RDMA 建连失败时会自动回落到 TCP。保可用这个设计没�
 
 `pagepool` 改大对 RDMA 场景收益明显，但它是独占的物理内存，容量规划时必须算进去，别调完直接 OOM。
 
-## NVMe-oF：两种 transport 摆一起比
+## 把 NVMe-oF 的两种 transport 摆一起比
 
 NVMe-oF 把 NVMe 协议搬到网络上，远端盘在本地看起来就是一个 `/dev/nvmeXnY`。它支持 RDMA 和 TCP 两种 transport，正好用来做对比实验。
 
@@ -117,9 +117,9 @@ mpstat -P ALL 1
 大块顺序带宽       接近线速      接近线速   ← 差别不大
 ```
 
-注意最后一行：大块顺序传输时两者差别很小，那是带宽受限，协议栈开销被摊薄了。RDMA 的价值集中在小 I/O 的延迟和 CPU 占用上，这也是判断「值不值得上」的依据。
+大块顺序传输时两者差别很小，那是带宽受限，协议栈开销被摊薄了。RDMA 的价值集中在小 I/O 的延迟和 CPU 占用上，这也是判断「值不值得上」的依据。
 
-## Ceph over RDMA：知道就行，别碰
+## Ceph over RDMA，知道就行，别碰
 
 Ceph 的 async messenger 有 RDMA 后端，配置项是 `ms_type = async+rdma`。
 
@@ -127,7 +127,7 @@ Ceph 的 async messenger 有 RDMA 后端，配置项是 `ms_type = async+rdma`�
 
 结论很干脆，生产 Ceph 集群不要用 RDMA。想要低延迟就换方案（GPFS / Weka / VastData），别给 Ceph 换网络栈。
 
-## GPUDirect Storage：省掉哪一次拷贝
+## GPUDirect Storage 省掉了哪一次拷贝？
 
 AI 训练场景才会碰到这个。普通路径下，数据从存储到 GPU 要过一次主机内存：
 
@@ -165,7 +165,7 @@ GDS 的开关在应用侧（要用 cuFile 写代码），存储运维负责的�
 被问到「我们的存储支持 GPUDirect 吗」时，别翻产品手册，跑一次 `gdscheck -p` 把证据拿出来。
 </Callout>
 
-## 验收：三条线一起看
+## 验收要盯三条线
 
 RDMA 生效与否，不能只看带宽，上面的对比表已经说明大块顺序传输根本看不出差别。有效的验收是三条线一起看：
 
@@ -187,7 +187,7 @@ RDMA 生效与否，不能只看带宽，上面的对比表已经说明大块顺
   options={[
     { text: '跑 mmfsadm test verbs conn，逐个核对对端节点是否都建立了 RDMA 连接', correct: true },
     { text: '直接调大 pagepool', feedback: 'pagepool 对 RDMA 场景确实有收益，但在确认 RDMA 是否生效之前调它是在猜。' },
-    { text: '重装 OFED', feedback: '代价大且盲目。先确认哪些节点没连上，再针对性排查。' },
+    { text: '重装 OFED', feedback: '重装代价不小，而且是在瞎猜。先确认哪些节点没连上，再针对性排查。' },
     { text: '认为 RDMA 对这个负载没用，回退配置', feedback: '在确认它真的跑起来之前，得不出这个结论。' },
   ]}
   explain={<>
@@ -202,18 +202,18 @@ RDMA 生效与否，不能只看带宽，上面的对比表已经说明大块顺
   options={[
     { text: '4K 随机读的延迟，以及压满带宽时的 CPU 占用', correct: true },
     { text: '大块顺序读的带宽', feedback: '大块顺序传输是带宽受限的，协议栈开销被摊薄，两者差别很小。拿它做判据会得出「RDMA 没用」的错误结论。' },
-    { text: '磁盘容量', feedback: '与 transport 无关。' },
-    { text: '连接建立的耗时', feedback: '建连是一次性开销，不影响稳态性能。' },
+    { text: '磁盘容量', feedback: '跟 transport 没关系，两种都一样。' },
+    { text: '连接建立要花多长时间', feedback: '建连是一次性开销，不影响稳态性能。' },
   ]}
   explain={<>
     RDMA 省掉的是每次 I/O 的固定开销（上下文切换、内存拷贝、协议栈处理）。
-    这部分开销在小 I/O 上占比极高、在大块传输里可以忽略，所以判据必须落在<strong>小 I/O 延迟</strong>和 <strong>CPU 占用</strong>上。
+    这部分开销在小 I/O 上占比极高、在大块传输里可以忽略，所以判据必须落在<strong>小 I/O 延迟</strong>和 CPU 占用上。
   </>}
 />
 
 <Quiz
   id="rdmas-3"
-  question="关于 GPUDirect Storage，下面哪些说法是对的？（多选）"
+  question="关于 GPUDirect Storage，哪些说法是对的？（多选）"
   options={[
     { text: '它省掉的是数据经过主机内存 bounce buffer 的那次拷贝', correct: true },
     { text: '应用需要用 cuFile 接口读写，不是改个配置就能生效', correct: true },

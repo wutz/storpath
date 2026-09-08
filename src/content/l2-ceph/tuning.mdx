@@ -1,6 +1,6 @@
 ## 先量再调
 
-没有基线的调优都是玄学。这一节不打算给你一堆参数，只讲怎么证明自己改的东西真有效。
+没有基线的调优都是玄学。我这儿不打算给你一堆参数，只讲怎么证明自己改的东西真有效。
 
 流程就四步，哪一步都别跳：
 
@@ -62,7 +62,7 @@ ceph osd perf         # 每个 OSD 的 commit/apply 延迟，找出慢盘
 ceph daemon osd.0 perf dump | grep -E 'op_latency|op_w_latency'
 ```
 
-找慢盘直接看 `ceph osd perf` 的两列延迟：
+`ceph osd perf` 的两列延迟直接点名慢盘：
 
 ```
 osd  commit_latency(ms)  apply_latency(ms)
@@ -75,16 +75,16 @@ osd  commit_latency(ms)  apply_latency(ms)
 
 ## 第 3 步：可调的参数
 
-### 客户端侧（先查这里）
+### 客户端并发够不够
 
-很多"存储慢"其实是客户端并发不够。单线程、队列深度 1 的负载，无论后端多强都跑不快。
+很多「存储慢」其实是客户端并发不够。单线程、队列深度 1 的负载，无论后端多强都跑不快。
 
 ```bash
 # 验证：把 elbencho 的 -t（线程数）和 --iodepth 加大，看总吞吐是否线性上升
 # 如果上升，说明后端还有余量，问题在客户端并发
 ```
 
-### OSD 侧
+### OSD 上要动的参数
 
 ```bash
 # 内存目标：按节点内存反推（详见 L0 CPU/内存一节）
@@ -110,18 +110,18 @@ HDD 集群的经典优化是把 BlueStore 的 WAL 和 DB（元数据）放到 NV
 ceph orch daemon add osd host:data_devices=/dev/sdb,db_devices=/dev/nvme0n1
 ```
 
-容量规划：DB 分区通常按数据盘容量的 **1% ~ 4%** 配。给少了会发生 DB 溢出（spillover）到 HDD，性能骤降：
+DB 分区通常按数据盘容量的 **1% ~ 4%** 配。给少了会发生 DB 溢出（spillover）到 HDD，性能骤降：
 
 ```bash
 ceph health detail | grep -i spillover
 ```
 
-全闪集群不需要分离，数据盘本身就是 NVMe，分离反而制造热点。
+全闪集群本来就不需要分离，数据盘本身就是 NVMe，硬要分离反而制造热点。
 </Callout>
 
-### 网络侧
+### 网络层没什么可调的
 
-MTU 9000、public/cluster 分离、重传率检查前面几节都讲过了，这里只补一条：
+MTU 9000、public/cluster 分离、重传率检查前面几节都讲过了，剩下要补的就一条恢复期限速。
 
 ```bash
 # 恢复期间的限速，避免恢复流量吃光带宽
@@ -130,7 +130,7 @@ ceph config set osd osd_recovery_max_active 3
 ceph config set osd osd_recovery_sleep_ssd 0
 ```
 
-### 池侧
+### 把 PG 分布摆均匀
 
 ```bash
 # PG 数不足会导致分布不均，用 autoscaler 的建议值
@@ -146,7 +146,7 @@ ceph osd df | tail -3       # 看 STDDEV 有没有下降
 1. **一次只改一个参数**，改完复测。同时改三个，效果好了你也不知道是哪个起作用，效果坏了更难回滚
 2. **记录**参数名、旧值、新值、改动时间、操作人和复测结果，写进变更记录，别只留在自己脑子里
 3. **准备回滚**。`ceph config set` 的对应操作是 `ceph config rm`，改之前先把旧值抄下来
-4. **不要抄网上的"优化参数大全"**，那些参数是为特定硬件和负载调的，直接套到你的环境上可能更慢，甚至引发故障
+4. **不要抄网上的「优化参数大全」**，那些参数是为特定硬件和负载调的，直接套到你的环境上可能更慢，甚至引发故障
 </Callout>
 
 ## 第 4 步：复测与记录
@@ -163,37 +163,37 @@ ceph osd df | tail -3       # 看 STDDEV 有没有下降
 
 <Quiz
   id="tune-1"
-  question="裸盘压测能跑 5 GB/s，但 rados bench 只有 900 MB/s。下一步该查什么？"
+  question="裸盘压测能跑 5 GB/s，但 rados bench 只有 900 MB/s。你下一步查什么？"
   options={[
     { text: '直接换更好的盘', feedback: '盘本身已经证明没问题。' },
     { text: '查网络（带宽、重传）和 OSD 侧的 CPU / 内存', correct: true },
-    { text: '增加 PG 数量', feedback: '可能有帮助，但不是第一个该查的。' },
-    { text: '把副本数改成 1', feedback: '这是牺牲数据安全换性能，不是调优。' },
+    { text: 'PG 数量是不是不够', feedback: '可能有帮助，但不是第一个该查的。' },
+    { text: '副本数改成 1 就好了', feedback: '这是牺牲数据安全换性能，不是调优。' },
   ]}
   explain={<>
-    裸盘快而 RADOS 慢，说明瓶颈在盘之上的环节，网络、副本复制、OSD 进程的 CPU/内存都得查。分层基线的用处就在这。
-    先用 sar -n DEV / ETCP 看网络，再用 ceph osd perf 找慢 OSD。
+    裸盘快而 RADOS 慢，瓶颈就在盘之上的环节：网络、副本复制、OSD 进程的 CPU/内存都得过一遍，分层基线要帮你指的就是这个方向。
+    网络交给 sar -n DEV / ETCP，慢 OSD 交给 ceph osd perf。
   </>}
 />
 
 <Quiz
   id="tune-2"
-  question="ceph osd perf 显示 osd.23 的 commit latency 是其它 OSD 的 30 倍。最合理的动作是？"
+  question="ceph osd perf 里 osd.23 的 commit latency 是别的 OSD 的 30 倍，你先做什么？"
   options={[
-    { text: '重启 osd.23 试试', feedback: '可能暂时缓解，但没有查明原因。' },
-    { text: '检查这块盘的 SMART、dmesg 和 PCIe 链路状态', correct: true },
-    { text: '把 osd.23 的 reweight 调低就行了', feedback: '这是绕过问题，慢盘仍在集群里，随时可能彻底坏掉。' },
-    { text: '忽略，一块盘不影响整体', feedback: '一块慢盘会拖慢所有以它为 primary 的 PG，影响面很大。' },
+    { text: '重启一下 osd.23', feedback: '可能暂时缓解，但没有查明原因。' },
+    { text: '这块盘的 SMART、dmesg 和 PCIe 链路先过一遍', correct: true },
+    { text: 'reweight 调低就行', feedback: '这是绕过问题，慢盘仍在集群里，随时可能彻底坏掉。' },
+    { text: '一块盘而已，先不管', feedback: '一块慢盘会拖慢所有以它为 primary 的 PG，影响面很大。' },
   ]}
   explain={<>
-    单块 OSD 延迟异常高，先查硬件：SMART 是否有介质错误、dmesg 有无 I/O error、PCIe 是否 downgraded。
-    确认硬件正常再看是不是 PG 分布不均导致它承担了过多负载。
+    单块 OSD 延迟异常高，硬件得先过一遍：SMART 有没有介质错误、dmesg 有没有 I/O error、PCIe 是不是被 downgraded 了。
+    硬件正常的话，再回头看 PG 分布，看它是不是背了太多负载。
   </>}
 />
 
 <Quiz
   id="tune-3"
-  question="关于调优纪律，下面哪些是对的？（多选）"
+  question="调优纪律这块，哪些做法是对的？（多选）"
   options={[
     { text: '一次只改一个参数并复测', correct: true },
     { text: '改动前记录旧值，准备好回滚命令', correct: true },
@@ -203,12 +203,12 @@ ceph osd df | tail -3       # 看 STDDEV 有没有下降
   explain={<>调优的产出物除了更快的集群，还有一份能让别人复现和回滚的记录。没有记录的调优等于给团队埋雷。</>}
 />
 
-## 基线、慢盘定位和变更记录
+## 建基线、找慢盘、留记录
 
 - 调优就四步，建基线、定位瓶颈、一次改一个、复测记录，顺序别换
 - 裸盘、RADOS、业务接口三层各测一遍，瓶颈卡在哪一层当场就能看出来
 - 慢盘用 `ceph osd perf` 找，一块就能拖累一大片 PG
-- 很多"存储慢"其实是客户端并发不够，后端并不慢
+- 很多「存储慢」其实是客户端并发不够，后端并不慢
 - 只有混闪才需要 WAL/DB 分离，DB 按数据盘容量的 1%~4% 配，记得看 spillover 告警
 - balancer 让 PG 分布更均匀，容量利用率和性能一致性都会好一点
 - 参数大全别抄，调优别不留记录

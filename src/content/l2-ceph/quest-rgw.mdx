@@ -1,17 +1,15 @@
-## 场景
-
-周一上午 10:30，监控告警：
+## 周一上午 10:30，5xx 开始飙升
 
 > **[P1] RGW 5xx 错误率 12.4%（阈值 1%），持续 8 分钟**
 
 业务方同步反馈：备份任务大量失败，报 `503 SlowDown`；但另一个组说他们的图片上传一切正常。
 
-你敲 `ceph -s`，返回 **HEALTH_OK**。
+你敲 `ceph -s`，集群回你一句 **HEALTH_OK**。
 
 <Callout type="tip" title="集群健康但业务报错，说明什么">
 `HEALTH_OK` 只说明 RADOS 层没问题。RGW 是架在 RADOS 之上的网关，它自己的瓶颈（index 池热点、bucket 分片、网关并发、LB 配置）不会体现在 `ceph -s` 里。
 
-这类"集群健康但业务报错"的场景，排查重点在网关层和它依赖的元数据池，别盯着 OSD。
+这类「集群健康但业务报错」的场景，排查重点在网关层和它依赖的元数据池，别盯着 OSD。
 </Callout>
 
 <Terminal
@@ -161,9 +159,11 @@
 
 ## 复盘
 
-**结论**：`backup-prod` bucket 有 4.13 亿个对象但仅 11 个索引分片（平均每片 3750 万对象），且 `buckets.index` 池未限定 device class，部分索引 PG 落在 HDD 上（延迟 400ms 量级）。索引读写成了瓶颈，RGW 请求队列打满（`qlen = qactive = 1024`），新请求直接被打回 `503 SlowDown`。
+**结论**：`backup-prod` bucket 有 4.13 亿个对象但仅 11 个索引分片（平均每片 3750 万对象），且 `buckets.index` 池未限定 device class，部分索引 PG 落在 HDD 上（延迟 400ms 量级）。
 
-`images-prod` 分片充足（128 片 / 841 万对象），所以没事，"部分业务正常"就是这么来的。
+索引读写成了瓶颈，RGW 请求队列打满（`qlen = qactive = 1024`），新请求直接被打回 `503 SlowDown`。
+
+`images-prod` 分片充足（128 片 / 841 万对象），所以没事，「部分业务正常」就是这么来的。
 
 处置分两步，先救急再治本：
 
@@ -194,11 +194,11 @@ ceph config set client.rgw rgw_override_bucket_index_max_shards 128
 
 执行前必须：
 
-1. 和业务方约定停写窗口，不能"顺手做一下"
+1. 和业务方约定停写窗口，不能「顺手做一下」
 2. 先确认 index 池已经在 SSD 上（否则 reshard 本身会慢得离谱）
 3. 评估是不是该拆成多个 bucket，单 bucket 4 亿对象本身就是设计问题
 
-最好的解法是这个 bucket 当初创建时就把分片设够。所以"预计存多少对象"这句话，设计阶段就得问清楚。
+最好的解法是这个 bucket 当初创建时就把分片设够。所以「预计存多少对象」这句话，设计阶段就得问清楚。
 </Callout>
 
 <Callout type="trap" title="混闪集群里最容易漏的一件事">
@@ -214,11 +214,11 @@ ceph config set client.rgw rgw_override_bucket_index_max_shards 128
 
 <Quiz
   id="qrgw-1"
-  question="ceph -s 显示 HEALTH_OK，但 RGW 大量返回 503。这说明什么？"
+  question="ceph -s 显示 HEALTH_OK，RGW 却大量返回 503。原因可能是什么？"
   options={[
     { text: '监控系统误报', feedback: '业务方的实际报错佐证了告警。' },
     { text: 'RADOS 层健康，但网关层或它依赖的元数据池存在瓶颈', correct: true },
-    { text: 'OSD 有慢盘但 Ceph 没检测到', feedback: '有可能，但 HEALTH_OK 的直接含义是 RADOS 层无异常；应先从网关层查起。' },
+    { text: 'OSD 有慢盘但 Ceph 没检测到', feedback: '有可能，但 HEALTH_OK 的直接含义是 RADOS 层无异常；得先从网关层查起。' },
     { text: '客户端网络故障', feedback: '网络故障不会表现为服务端队列打满。' },
   ]}
   explain={<>
@@ -231,7 +231,7 @@ ceph config set client.rgw rgw_override_bucket_index_max_shards 128
   id="qrgw-2"
   question="一个 bucket 有 4 亿对象、11 个索引分片。按规划口径，分片数应该是多少量级？"
   options={[
-    { text: '大约 100', feedback: '每片会有 400 万对象，仍然远超合理值。' },
+    { text: '一百片左右', feedback: '每片会有 400 万对象，仍然远超合理值。' },
     { text: '大约 4000', correct: true },
     { text: '11 个就够，分片多了反而慢', feedback: '分片过多确实有 list 开销，但 11 片承载 4 亿对象是数百倍的差距。' },
     { text: '与对象数无关，看容量', feedback: '索引的压力来自对象数量，不是数据体积。' },
@@ -241,7 +241,7 @@ ceph config set client.rgw rgw_override_bucket_index_max_shards 128
 
 <Quiz
   id="qrgw-3"
-  question="混闪集群里，下面哪些池必须显式限定 device class 到 SSD？（多选）"
+  question="混闪集群里，哪些池必须显式限定 device class 到 SSD？（多选）"
   options={[
     { text: 'default.rgw.buckets.index', correct: true },
     { text: 'cephfs.<fs>.meta', correct: true },
@@ -256,9 +256,9 @@ ceph config set client.rgw rgw_override_bucket_index_max_shards 128
 
 ## 别等告警响了才去看网关队列和分片
 
-- 网关层的问题 `ceph -s` 看不见，得用 `ceph daemon rgw.<name> perf dump` 看
+- 网关层的问题 `ceph -s` 看不见，得用 `ceph daemon rgw.<name> perf dump` 去问守护进程
 - `qlen = qactive` 就是队列打满，客户端拿到的是 503 SlowDown
-- 部分 bucket 正常、部分异常，拿 `bucket stats` 做对照能快速锁定
-- 索引分片按每片约 10 万对象规划，建 bucket 时设够，事后 reshard 要阻塞写入
-- 混闪集群里所有元数据池都得显式限定 device class
-- 处置分两层，救急降并发、扩队列，治本换介质、reshard、改默认值
+- 一部分 bucket 正常、一部分异常的时候，拿 `bucket stats` 做对照能快速锁定
+- 索引分片按每片约 10 万对象规划。建 bucket 时就设够，事后 reshard 要阻塞写入
+- 混闪集群里，所有元数据池都别忘了显式限定 device class
+- 处置分两层，救急是降并发、扩队列，治本是换介质、reshard、改默认值

@@ -16,11 +16,11 @@ export const Route = createFileRoute('/')({
 
 /** 五个阶段各解决什么问题，顺序为什么这么排 */
 const STAGE_HINT: Record<string, string> = {
-  'l0-fundamentals': '不用碰命令行。先把存储那套话学会，后面每节课都绕不开这几个词。',
-  'l1-systems': '存储跑在机器上。学会读机器给你的信号，才谈得上判断「到底慢在哪」。',
-  'l2-ceph': '集群跑起来之后才回头讲原理，四关排障就是专门练手感的。',
+  'l0-fundamentals': '不用碰命令行。先把存储那套话弄清，后面每节都绕不开这几个词。',
+  'l1-systems': '存储跑在机器上。能读懂机器给的信号，才谈得上判断「到底慢在哪」。',
+  'l2-ceph': '集群跑起来之后再回头拆原理，四关排障专门练手感。',
   'l3-planning': '开始算账。把业务需求翻译成机器数量、盘型号和网络配置。',
-  'l4-advanced': '走出 Ceph 的舒适区，把散落的知识收口成可交接的流程。',
+  'l4-advanced': '走出 Ceph 的舒适区，把散落的知识收拢成能交接的流程。',
 }
 
 function Home() {
@@ -46,9 +46,9 @@ function Home() {
         </div>
         <h1 className="display-2xl mt-3">从看懂一块盘，到扛住一套集群。</h1>
         <p className="mt-4 max-w-2xl text-[17px] leading-relaxed text-body">
-          这是一条存储运维工程师的成长路线。{stats.lessonCount} 节课排成一条线：
-          先弄懂存储在说什么，再学会读机器给的信号，然后亲手把集群跑起来、扛住它出的每一次故障，
-          最后能替业务算账、把方案和 SOP 交出去。没有分岔，也不用挑，从第一节往下走就行。
+          按存储运维工程师的路子排了 {stats.lessonCount} 节，一条线走到底：
+          先弄清存储在说什么，再读懂机器给的信号，然后亲手把集群跑起来、扛住它出的故障，
+          最后替业务算账、把方案和 SOP 交出去。没有分岔，也不用挑，从第一节往下走就行。
         </p>
       </section>
 
@@ -147,7 +147,7 @@ function Home() {
         })}
 
         <p className="text-sm leading-relaxed text-mute">
-          顺序是建议不是限制。有底子的话，直接跳到对应阶段也行。
+          顺序只是建议，不是限制。有底子的话，直接跳到对应阶段也行。
           想先动手，
           <Link
             to="/labs"
@@ -155,7 +155,7 @@ function Home() {
           >
             实验与闯关
           </Link>
-          把全部动手环节汇总在了一起。
+          里有全部动手环节。
         </p>
       </section>
     </div>
@@ -174,7 +174,7 @@ function Marker({ done, children }: { done: boolean; children: ReactNode }) {
   )
 }
 
-/** 「原理」是默认形态，只给动手环节挂徽标 */
+/** 「原理」是默认标签，只给动手环节挂徽标 */
 function KindBadge({ kind }: { kind: keyof typeof KIND_LABEL }) {
   if (kind === 'concept') return null
   return (

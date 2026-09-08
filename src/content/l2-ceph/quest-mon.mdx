@@ -22,7 +22,7 @@
   id="mon-quorum-quest"
   host="root@ceph-node1"
   intro={`模拟终端：ceph -s 已经卡住十分钟了。
-注意：这一关里 ceph 系列命令大多不可用，你需要用系统层的工具排查。
+这一关 ceph 系列命令大多用不了，你得靠系统层的工具排查。
 输入 goals 看目标，hint 要提示。`}
   commands={[
     {
@@ -121,7 +121,7 @@ Aug 11 09:48:31 ceph-node1 ceph-mon[41233]: mon.ceph-node1 e3 cluster HEALTH_WAR
 
 **结论**：`ceph-node1` 与 `ceph-node2` 的 `/var/lib/ceph` 分区被 MON 的 RocksDB（`store.db`）写满，两个 MON 进程反复崩溃退出。3 个 MON 只剩 1 个，凑不齐 quorum（需要 2 个），整个集群的管理面和数据面一起没了。
 
-**根因链**：
+根因是一条链：
 
 ```
 osd.14 坏盘（8 月 11 日）
@@ -157,61 +157,61 @@ ceph health detail
 
 <Callout type="trap" title="三个绝对不能做的操作">
 1. **不要删 `store.db` 里的文件**：那是集群状态的唯一副本，删了这个 MON 就废了
-2. **不要用 `mon remove` 删掉挂掉的 MON 试图"凑齐" quorum**：quorum 的分母会跟着变，情况只会更复杂，而且这个删除操作本身也要 quorum
+2. **不要用 `mon remove` 删掉挂掉的 MON 试图「凑齐」 quorum**：quorum 的分母会跟着变，情况只会更复杂，而且这个删除本身也要 quorum
 3. **不要同时重装多个 MON**：先救活一个恢复 quorum，是所有后续操作的前提
 
-MON 相关的操作里，"少动、按顺序动"永远比"快速尝试"更安全。
+MON 相关的操作里，「少动、按顺序动」永远比「快速尝试」更安全。
 </Callout>
 
 <Callout type="warn" title="这一关真正的教训">
 故障发生在 03:47，但根因是**三天前那块没被处理的坏盘**。
 
 集群长期处于 HEALTH_WARN 会带来一系列连锁反应，MON 的 store.db 不压缩只是其中之一。
-"HEALTH_WARN 又不影响业务，先放着吧"，这个念头是很多重大事故的起点。
+「HEALTH_WARN 又不影响业务，先放着吧」，这个念头是很多重大事故的起点。
 </Callout>
 
 <Quiz
   id="qmon-1"
-  question="ceph -s 卡住不返回，最不该做的是？"
+  question="ceph -s 卡住不返回，这时候最不该干什么？"
   options={[
-    { text: '用 systemctl 查看各节点 MON 进程状态', feedback: '这正是正确的第一步。' },
+    { text: 'systemctl 看各节点 MON 进程状态', feedback: '对，这就是该先做的一步。' },
     { text: '反复重试 ceph 命令，等它自己好', correct: true },
-    { text: '检查各 MON 节点的磁盘空间', feedback: '合理，mon_data 写满是常见原因。' },
-    { text: '看 MON 的 journald 日志', feedback: '合理，日志会直接给出崩溃原因。' },
+    { text: 'df 一下各 MON 节点的磁盘空间', feedback: '也合理，mon_data 写满很常见。' },
+    { text: 'journald 日志里翻 MON 崩溃的原因', feedback: '可以，日志会直接告诉你为什么崩。' },
   ]}
   explain={<>
-    ceph 命令依赖 MON quorum。quorum 没了，再敲一百遍也是超时。
-    此时必须切换到系统层工具：systemctl、journalctl、df、ss。
+    ceph 命令依赖 MON quorum，quorum 没了，再敲一百遍也是超时。
+    只能换系统层的工具：systemctl、journalctl、df、ss。
   </>}
 />
 
 <Quiz
   id="qmon-2"
-  question="MON 的 store.db 涨到几百 GB，最可能的原因是？"
+  question="MON 的 store.db 涨到几百 GB，多半是什么原因？"
   options={[
     { text: '集群长期处于不健康状态，MON 不压缩历史 map', correct: true },
     { text: '客户端写入量太大', feedback: 'MON 不在数据路径上，客户端数据不经过它。' },
-    { text: 'MON 数量配置太多', feedback: '与数量无关。' },
-    { text: '磁盘故障导致数据重复写入', feedback: '不会产生这种模式。' },
+    { text: 'MON 配得太多了', feedback: '跟数量没关系。' },
+    { text: '坏盘导致同一份数据被重复写入', feedback: '不会长成这样。' },
   ]}
   explain={<>
-    集群不健康时，MON 需要保留更多历史 map 以支持恢复，因此不做压缩。
-    HEALTH_WARN 不能长期挂着。它会通过这条隐蔽的路径演变成集群级事故。
+    集群不健康时，MON 要保留更多历史 map 才能支持恢复，所以不做压缩。
+    HEALTH_WARN 别长期挂着，它会顺着这条不显眼的路走成集群级事故。
   </>}
 />
 
 <Quiz
   id="qmon-3"
-  question="两个 MON 因磁盘满崩溃，第三个正常。正确的处置顺序是？"
+  question="两个 MON 因为磁盘满崩了，第三个还正常。该怎么处置？"
   options={[
-    { text: '先删 store.db 释放空间，再启动 MON', feedback: 'store.db 是集群状态的唯一副本，删了这个 MON 就报废了。' },
-    { text: '先用 mon remove 移除挂掉的两个 MON', feedback: '该操作本身需要 quorum，而且会改变 quorum 分母，让情况更复杂。' },
+    { text: '删掉 store.db 腾空间，然后启动 MON', feedback: 'store.db 是集群状态的唯一副本，删了这个 MON 就报废了。' },
+    { text: '用 mon remove 把挂掉的两个 MON 移掉', feedback: '这个操作本身就要 quorum，还会改掉 quorum 的分母，越弄越乱。' },
     { text: '腾出其它空间 → 启动一个 MON 恢复 quorum → compact → 启动另一个 → 处理坏盘', correct: true },
     { text: '重装整个集群', feedback: '数据都还在，完全没必要。' },
   ]}
   explain={<>
-    关键是「先恢复 quorum」。没有 quorum，几乎所有 ceph 命令（包括 compact）都用不了。
-    腾空间要从日志等无关数据下手，绝不能碰 store.db。
+    顺序里最重要的是先恢复 quorum：没有 quorum，几乎所有 ceph 命令（包括 compact）都用不了。
+    腾空间从日志这类无关数据下手，store.db 一个文件都别碰。
   </>}
 />
 

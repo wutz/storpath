@@ -35,10 +35,10 @@ function LabsPage() {
     <div className="space-y-10">
       <header>
         <div className="eyebrow">Hands-on</div>
-        <h1 className="display-2xl mt-3">动手的部分。</h1>
+        <h1 className="display-2xl mt-3">看十遍，不如亲手做一遍。</h1>
         <p className="mt-4 max-w-2xl text-[17px] leading-relaxed text-body">
-          知识点看过就忘，手上做过才记得住。这里把全部动手环节汇总在一起，
-          你可以脱离课程顺序直接来练。
+          知识看过容易忘，手上做过才真正记得住。这里把散落在各阶段的动手环节收拢到一处，
+          不必按课程顺序，挑一个感兴趣的直接开练。
         </p>
       </header>
 

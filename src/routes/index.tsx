@@ -44,7 +44,7 @@ function Home() {
           {stats.lessonCount} lessons · {stats.trackCount} stages ·{' '}
           {Math.round(stats.totalMinutes / 60)} hours
         </div>
-        <h1 className="display-2xl mt-3">从看懂一块盘，到扛住一套集群。</h1>
+        <h1 className="display-2xl mt-3">从认识一块硬盘，到扛起一整套集群。</h1>
         <p className="mt-4 max-w-2xl text-[17px] leading-relaxed text-body">
           这是一条写给存储运维工程师的成长路线。{stats.lessonCount} 节课串成一条线：
           先听懂存储这门语言，再学会读机器发出的信号，然后亲手把集群跑起来、扛住它抛来的每一次故障，
